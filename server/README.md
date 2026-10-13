@@ -2,6 +2,23 @@
 
 Backend untuk MVP game catur online. API dirancang menggunakan Node.js dan Express, dengan PostgreSQL/Sequelize untuk penyimpanan, Socket.IO untuk pembaruan PvP real-time, `chess.js` v1.4.0 untuk aturan dan validasi langkah, serta Stockfish untuk langkah bot dan analisis permainan.
 
+## Menjalankan fondasi server
+
+Gunakan Node.js dan PostgreSQL. Salin `.env.example` menjadi `.env`, lalu isi password PostgreSQL untuk development dan testing. File `.env` tidak boleh di-commit.
+
+```powershell
+Copy-Item .env.example .env
+npm run db:create
+npm run db:migrate
+npm run db:create:testing
+npm run db:migrate:testing
+npm run dev
+```
+
+Server memakai database `hacktiv_chess_development` untuk `NODE_ENV=development`, `hacktiv_chess_testing` untuk `NODE_ENV=test`, dan `hacktiv_chess_production` untuk `NODE_ENV=production`. Untuk testing, jalankan `npm run db:migrate:testing` setelah membuat database testing. Isi host, nama database, user, dan password production sebelum menjalankan `npm run db:create:production` dan `npm run db:migrate:production`. Migration awal membuat tabel `users`, `games`, dan `game_moves` beserta constraint dan indeks skema. Endpoint `GET /health` menjadi health check API.
+
+Command `npm start` menjalankan entry point yang sama tanpa mode watch. Sequelize CLI memakai konfigurasi, model, dan migration di dalam `src/`; migration awal membuat tabel `users`, `games`, dan `game_moves`.
+
 ## Alur pengguna
 
 1. Pengguna membuat akun melalui `POST /api/auth/register`.
@@ -119,10 +136,8 @@ History `game_moves` menjadi sumber PGN; PGN dibentuk saat dibutuhkan. `games.cu
 - [Rancangan skema database PostgreSQL](./DATABASE_SCHEMA.md)
 - [Instruksi untuk pengembangan backend](./AGENTS.md)
 
-## Status
+## Status fondasi
 
-Saat ini folder `server` berisi dokumen kebutuhan dan kontrak API. Source code runtime, `package.json`, migrasi database, serta konfigurasi deployment belum dibuat; server belum dapat dijalankan.
+Fondasi server sudah tersedia: Express dan Socket.IO, konfigurasi Sequelize untuk development/testing/production, model `User`, `Game`, dan `GameMove`, serta tiga migration awal. Endpoint runtime yang tersedia saat ini hanya `GET /health`; autentikasi, game, lobby, bot Stockfish, dan endpoint lain di dokumen API belum diimplementasikan. Server dapat dijalankan setelah PostgreSQL tersedia dan database development berhasil dimigrasikan.
 
-## Konfigurasi yang direncanakan
-
-Implementasi nantinya memerlukan PostgreSQL, secret JWT, serta executable Stockfish. Nilai seperti URL database, secret JWT, origin frontend, dan path Stockfish harus disimpan dalam environment variables; jangan commit secret atau file `.env`.
+Untuk deployment production, isi kredensial database production di environment variables platform. Secret JWT dan path executable Stockfish akan diperlukan saat fitur terkait dibuat. Jangan commit `.env` atau secret.
