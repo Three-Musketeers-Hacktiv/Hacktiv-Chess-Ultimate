@@ -33,6 +33,21 @@ function broadcast(request, result) {
   }
 }
 
+function broadcastGameStarted(request, result) {
+  const io = request.app.get("io");
+  if (!io || !result.matched || result.alreadyMatched) return;
+  const game = { ...result.game };
+  delete game.color;
+  delete game.opponent;
+  const roomId = result.game.id;
+  io.to(`user:${result.whitePlayerId}`).emit("game_started", {
+    room_id: roomId, color: "w", opponent: result.black, game,
+  });
+  io.to(`user:${result.blackPlayerId}`).emit("game_started", {
+    room_id: roomId, color: "b", opponent: result.white, game,
+  });
+}
+
 function sendTimeout(response, result) {
   if (!result.timedOut) return false;
   response.status(409).json({ status: "error", code: "GAME_TIMEOUT", message: "Waktu pemain yang sedang berjalan sudah habis.", game: result.game });
@@ -48,21 +63,25 @@ const asyncHandler = (handler) => async (request, response, next) => {
 };
 
 const createGame = asyncHandler(async (request, response) => {
-  const result = await gameService.createRoom(request.user.id, request.body);
-  response.status(201).json({ status: "success", game: result.game });
-});
-
-const listOpen = asyncHandler(async (_request, response) => {
-  response.json({ status: "success", games: await gameService.listOpenRooms() });
+  const receivedAt = new Date();
+  const result = await gameService.createRoom(request.user.id, request.body, receivedAt);
+  broadcastGameStarted(request, result);
+  response.status(result.matched ? 200 : 202).json({
+    status: "success",
+    matchmaking: { status: result.matched ? "matched" : "searching" },
+    game: result.game,
+  });
 });
 
 const listLive = asyncHandler(async (_request, response) => {
   response.json({ status: "success", games: await gameService.listLiveGames() });
 });
 
-const joinGame = asyncHandler(async (request, response) => {
-  const result = await gameService.joinRoom(request.user.id, request.params.id, new Date());
-  response.json({ status: "success", game: result.game });
+const cancelMatchmaking = asyncHandler(async (request, response) => {
+  response.json({
+    status: "success",
+    ...await gameService.cancelMatchmaking(request.user.id, request.params.id),
+  });
 });
 
 const makeMove = asyncHandler(async (request, response) => {
@@ -125,4 +144,4 @@ const claimDraw = asyncHandler(async (request, response) => {
   });
 });
 
-module.exports = { createGame, listOpen, listLive, joinGame, makeMove, getGame, resign, offerDraw, respondDraw, claimDraw };
+module.exports = { createGame, cancelMatchmaking, listLive, makeMove, getGame, resign, offerDraw, respondDraw, claimDraw };

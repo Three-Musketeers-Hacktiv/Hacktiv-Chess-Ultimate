@@ -1,10 +1,11 @@
 const { randomUUID } = require("node:crypto");
 const { Chess } = require("chess.js");
-const { Transaction } = require("sequelize");
+const { Op, Transaction, UniqueConstraintError } = require("sequelize");
 const { Game, GameMove, User, sequelize } = require("../models");
 const { enqueueGameAction } = require("./game-queue.service");
 
 const START_FEN = new Chess().fen();
+const MATCHMAKING_LOCK_KEY = "pvp:matchmaking";
 const TIME_CONTROLS = Object.freeze({
   bullet: { minutes: 1, increment: 0 },
   blitz: { minutes: 3, increment: 2 },
@@ -139,7 +140,7 @@ async function timeoutIfExpired(game, receivedAt, transaction) {
   return true;
 }
 
-async function createRoom(userId, body) {
+async function createRoom(userId, body, receivedAt = new Date()) {
   if (!body || body.mode !== "pvp" || body.difficulty !== undefined) {
     fail(400, "INVALID_GAME", "Pembuatan game PvP memerlukan mode pvp dan tidak menerima difficulty.");
   }
@@ -147,30 +148,101 @@ async function createRoom(userId, body) {
   if (!preset) fail(400, "INVALID_TIME_CONTROL", "Preset waktu tidak valid.");
   const user = await User.findByPk(userId, { attributes: ["id", "username"] });
   if (!user) fail(401, "ACCOUNT_NOT_FOUND", "Akun tidak ditemukan.");
-  const now = new Date();
   const ms = preset.minutes * 60_000;
-  const game = await Game.create({
-    id: randomUUID(), mode: "pvp", status: "waiting",
-    time_control_minutes: preset.minutes, increment_seconds: preset.increment,
-    bot_difficulty: null, white_player_id: userId, black_player_id: null,
-    current_fen: START_FEN, white_time_remaining_ms: ms, black_time_remaining_ms: ms,
-    turn_started_at: null, started_at: null,
-  });
-  return { game: publicGame(game, "w", null, now), white: user.username, black: null };
+  try {
+    return await sequelize.transaction({ isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED }, async (transaction) => {
+      // Serialize PvP matchmaking across presets so a player cannot be matched twice concurrently.
+      await sequelize.query("SELECT pg_advisory_xact_lock(hashtext(:lockKey))", {
+        replacements: { lockKey: MATCHMAKING_LOCK_KEY }, transaction,
+      });
+
+      const activeGame = await Game.findOne({
+        where: {
+          mode: "pvp", status: "in_progress",
+          [Op.or]: [{ white_player_id: userId }, { black_player_id: userId }],
+        },
+        transaction,
+      });
+      if (activeGame) {
+        const color = isPlayer(activeGame, userId);
+        const names = await playerNames(activeGame, transaction);
+        return {
+          game: publicGame(activeGame, color, color === "w" ? names.black : names.white, receivedAt),
+          matched: true, alreadyMatched: true,
+          whitePlayerId: activeGame.white_player_id, blackPlayerId: activeGame.black_player_id,
+          white: names.white, black: names.black,
+        };
+      }
+
+      const ownQueue = await Game.findOne({
+        where: { mode: "pvp", status: "waiting", white_player_id: userId },
+        transaction, lock: transaction.LOCK.UPDATE,
+      });
+      if (ownQueue) {
+        if (ownQueue.time_control_minutes !== preset.minutes || ownQueue.increment_seconds !== preset.increment) {
+          fail(409, "MATCHMAKING_ALREADY_QUEUED", "Batalkan antrean aktif sebelum memilih kontrol waktu lain.");
+        }
+        return { game: publicGame(ownQueue, "w", null, receivedAt), matched: false };
+      }
+
+      const opponentGame = await Game.findOne({
+        where: {
+          mode: "pvp", status: "waiting", black_player_id: null,
+          white_player_id: { [Op.ne]: userId },
+          time_control_minutes: preset.minutes, increment_seconds: preset.increment,
+        },
+        order: [["created_at", "ASC"]], transaction, lock: transaction.LOCK.UPDATE,
+      });
+
+      if (opponentGame) {
+        const matchedAt = new Date();
+        opponentGame.black_player_id = userId;
+        opponentGame.status = "in_progress";
+        opponentGame.started_at = matchedAt;
+        opponentGame.turn_started_at = matchedAt;
+        await opponentGame.save({ transaction });
+        const white = await User.findByPk(opponentGame.white_player_id, { attributes: ["username"], transaction });
+        return {
+          game: publicGame(opponentGame, "b", white.username, matchedAt), matched: true,
+          whitePlayerId: opponentGame.white_player_id, blackPlayerId: userId,
+          white: white.username, black: user.username,
+        };
+      }
+
+      const game = await Game.create({
+        id: randomUUID(), mode: "pvp", status: "waiting",
+        time_control_minutes: preset.minutes, increment_seconds: preset.increment,
+        bot_difficulty: null, white_player_id: userId, black_player_id: null,
+        current_fen: START_FEN, white_time_remaining_ms: ms, black_time_remaining_ms: ms,
+        turn_started_at: null, started_at: null,
+      }, { transaction });
+      return { game: publicGame(game, "w", null, receivedAt), matched: false, white: user.username };
+    });
+  } catch (error) {
+    if (!(error instanceof UniqueConstraintError)) throw error;
+    const ownQueue = await Game.findOne({ where: { mode: "pvp", status: "waiting", white_player_id: userId } });
+    if (!ownQueue) throw error;
+    if (ownQueue.time_control_minutes !== preset.minutes || ownQueue.increment_seconds !== preset.increment) {
+      fail(409, "MATCHMAKING_ALREADY_QUEUED", "Batalkan antrean aktif sebelum memilih kontrol waktu lain.");
+    }
+    return { game: publicGame(ownQueue, "w", null, receivedAt), matched: false };
+  }
 }
 
-async function listOpenRooms() {
-  const games = await Game.findAll({
-    where: { mode: "pvp", status: "waiting", black_player_id: null },
-    include: [{ model: User, as: "whitePlayer", attributes: ["username"] }],
-    order: [["created_at", "ASC"]], limit: 100,
+async function cancelMatchmaking(userId, gameId) {
+  return sequelize.transaction(async (transaction) => {
+    await sequelize.query("SELECT pg_advisory_xact_lock(hashtext(:lockKey))", {
+      replacements: { lockKey: MATCHMAKING_LOCK_KEY }, transaction,
+    });
+    const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
+    if (game.white_player_id !== userId) fail(403, "MATCHMAKING_FORBIDDEN", "Hanya pemilik antrean yang dapat membatalkannya.");
+    if (game.mode !== "pvp" || game.status !== "waiting" || game.white_player_id !== userId) {
+      fail(409, "MATCH_ALREADY_FOUND", "Antrean tidak bisa dibatalkan karena pertandingan sudah dimulai.");
+    }
+    await game.destroy({ transaction });
+    return { cancelled: true, gameId };
   });
-  return games.map((game) => ({
-    id: game.id,
-    white: game.whitePlayer.username,
-    time_control: Object.keys(TIME_CONTROLS).find((id) => TIME_CONTROLS[id].minutes === game.time_control_minutes),
-    createdAt: game.created_at,
-  }));
 }
 
 async function listLiveGames() {
@@ -193,25 +265,6 @@ async function listLiveGames() {
       increment_seconds: game.increment_seconds,
     },
     clocks: clockSnapshot(game, now), fen: game.current_fen, moveCount: game.moves.length,
-  }));
-}
-
-async function joinRoom(userId, gameId, receivedAt = new Date()) {
-  return enqueueGameAction(gameId, () => sequelize.transaction({ isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED }, async (transaction) => {
-    const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
-    if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
-    if (game.mode !== "pvp" || game.status !== "waiting") fail(409, "ROOM_UNAVAILABLE", "Room sudah tidak tersedia.");
-    if (game.white_player_id === userId) fail(409, "CANNOT_JOIN_OWN_ROOM", "Anda tidak dapat bergabung ke room sendiri.");
-    game.black_player_id = userId;
-    game.status = "in_progress";
-    game.started_at = receivedAt;
-    game.turn_started_at = new Date();
-    await game.save({ transaction });
-    const [white, black] = await Promise.all([
-      User.findByPk(game.white_player_id, { attributes: ["username"], transaction }),
-      User.findByPk(userId, { attributes: ["username"], transaction }),
-    ]);
-    return { game: publicGame(game, "b", white.username, game.turn_started_at), white: white.username, black: black.username };
   }));
 }
 
@@ -318,7 +371,9 @@ async function watchGame(userId, gameId) {
   });
   if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
   const color = isPlayer(game, userId);
-  if (!(game.mode === "pvp" && game.status === "in_progress") && !color) {
+  const canWatchPvP = game.mode === "pvp" && game.status === "in_progress";
+  const canWatchOwnBot = game.mode === "bot" && game.status === "in_progress" && color;
+  if (!canWatchPvP && !canWatchOwnBot) {
     fail(403, "WATCH_FORBIDDEN", "Anda tidak dapat menonton game ini.");
   }
   const history = await loadHistory(gameId);
@@ -441,7 +496,7 @@ async function findActiveGameIds() {
 }
 
 module.exports = {
-  GameError, TIME_CONTROLS, createRoom, listOpenRooms, listLiveGames, joinRoom,
+  GameError, TIME_CONTROLS, createRoom, cancelMatchmaking, listLiveGames,
   makeMove, getGame, watchGame, resign, expireGame, findActiveGameIds,
   offerDraw, respondDraw, claimDraw,
 };

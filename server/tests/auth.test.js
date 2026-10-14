@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const { once } = require("node:events");
 const { after, before, test } = require("node:test");
 const http = require("node:http");
+const { Op } = require("sequelize");
 const { compare } = require("../src/helpers/bcrypt");
 const { signToken, verifyToken } = require("../src/helpers/jwt");
 const authenticateSocket = require("../src/socket/auth");
@@ -18,7 +19,6 @@ const email = `auth-${suffix}@example.com`;
 const username = `auth_${suffix}`;
 let baseUrl;
 let emittedEvents = [];
-let createdGameId;
 let secondEmailCleanup;
 
 app.set("io", {
@@ -35,9 +35,20 @@ before(async () => {
 });
 
 after(async () => {
-  if (createdGameId) await Game.destroy({ where: { id: createdGameId } });
-  if (secondEmailCleanup) await User.destroy({ where: { email: secondEmailCleanup } });
-  await User.destroy({ where: { email } });
+  const testEmails = [email, ...(secondEmailCleanup ? [secondEmailCleanup] : [])];
+  const testUsers = await User.findAll({ where: { email: { [Op.in]: testEmails } }, attributes: ["id"] });
+  const testUserIds = testUsers.map((testUser) => testUser.id);
+  if (testUserIds.length) {
+    await Game.destroy({
+      where: {
+        [Op.or]: [
+          { white_player_id: { [Op.in]: testUserIds } },
+          { black_player_id: { [Op.in]: testUserIds } },
+        ],
+      },
+    });
+    await User.destroy({ where: { id: { [Op.in]: testUserIds } } });
+  }
   await new Promise((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve())),
   );
@@ -152,21 +163,70 @@ test("register hashes passwords, login issues JWT, and protected home requires J
     method: "POST", headers: firstHeaders,
     body: JSON.stringify({ mode: "pvp", time_control: "bullet" }),
   });
-  assert.equal(createdRoom.status, 201);
-  const room = (await createdRoom.json()).game;
-  createdGameId = room.id;
+  assert.equal(createdRoom.status, 202);
+  const waiting = await createdRoom.json();
+  const room = waiting.game;
   assert.equal(room.status, "waiting");
   assert.equal(room.color, "w");
 
-  const openRooms = await fetch(`${baseUrl}/api/games/open`, { headers: firstHeaders });
-  assert.ok((await openRooms.json()).games.some((game) => game.id === room.id));
+  const repeatedQueue = await fetch(`${baseUrl}/api/games`, {
+    method: "POST", headers: firstHeaders,
+    body: JSON.stringify({ mode: "pvp", time_control: "bullet" }),
+  });
+  assert.equal(repeatedQueue.status, 202);
+  assert.equal((await repeatedQueue.json()).game.id, room.id);
 
-  const ownJoin = await fetch(`${baseUrl}/api/games/${room.id}/join`, { method: "POST", headers: firstHeaders });
-  assert.equal(ownJoin.status, 409);
+  const differentPreset = await fetch(`${baseUrl}/api/games`, {
+    method: "POST", headers: secondHeaders,
+    body: JSON.stringify({ mode: "pvp", time_control: "blitz" }),
+  });
+  assert.equal(differentPreset.status, 202);
+  const secondQueue = (await differentPreset.json()).game;
+  assert.notEqual(secondQueue.id, room.id);
 
-  const joined = await fetch(`${baseUrl}/api/games/${room.id}/join`, { method: "POST", headers: secondHeaders });
+  const switchPresetWhileQueued = await fetch(`${baseUrl}/api/games`, {
+    method: "POST", headers: secondHeaders,
+    body: JSON.stringify({ mode: "pvp", time_control: "bullet" }),
+  });
+  assert.equal(switchPresetWhileQueued.status, 409);
+
+  const cancelled = await fetch(`${baseUrl}/api/games/${secondQueue.id}/matchmaking`, {
+    method: "DELETE", headers: secondHeaders,
+  });
+  assert.equal(cancelled.status, 200);
+  assert.equal((await cancelled.json()).cancelled, true);
+
+  const joined = await fetch(`${baseUrl}/api/games`, {
+    method: "POST", headers: secondHeaders,
+    body: JSON.stringify({ mode: "pvp", time_control: "bullet" }),
+  });
   assert.equal(joined.status, 200);
-  assert.equal((await joined.json()).game.color, "b");
+  const matched = await joined.json();
+  assert.equal(matched.matchmaking.status, "matched");
+  assert.equal(matched.game.id, room.id);
+  assert.equal(matched.game.color, "b");
+  assert.ok(emittedEvents.some((item) => item.event === "game_started" && item.room === `user:${user.id}`));
+
+  const startedEventCount = emittedEvents.filter((item) => item.event === "game_started").length;
+  const retries = await Promise.all([firstHeaders, secondHeaders].map((headers) => fetch(`${baseUrl}/api/games`, {
+    method: "POST", headers, body: JSON.stringify({ mode: "pvp", time_control: "bullet" }),
+  })));
+  const retryBodies = await Promise.all(retries.map((response) => response.json()));
+  assert.deepEqual(retries.map((response) => response.status), [200, 200]);
+  assert.deepEqual(retryBodies.map((body) => body.game.id), [room.id, room.id]);
+  assert.deepEqual(retryBodies.map((body) => body.game.color), ["w", "b"]);
+  assert.equal(emittedEvents.filter((item) => item.event === "game_started").length, startedEventCount);
+  assert.equal(await Game.count({
+    where: { mode: "pvp", status: "in_progress", [Op.or]: [{ white_player_id: user.id }, { black_player_id: user.id }] },
+  }), 1);
+
+  const cancelAfterMatch = await fetch(`${baseUrl}/api/games/${room.id}/matchmaking`, {
+    method: "DELETE", headers: firstHeaders,
+  });
+  assert.equal(cancelAfterMatch.status, 409);
+
+  const openRooms = await fetch(`${baseUrl}/api/games/open`, { headers: firstHeaders });
+  assert.equal(openRooms.status, 400);
 
   const wrongTurn = await fetch(`${baseUrl}/api/games/${room.id}/moves`, {
     method: "POST", headers: secondHeaders, body: JSON.stringify({ from: "e7", to: "e5" }),
@@ -226,6 +286,12 @@ test("register hashes passwords, login issues JWT, and protected home requires J
   const resign = await fetch(`${baseUrl}/api/games/${room.id}/resign`, { method: "POST", headers: secondHeaders });
   assert.equal(resign.status, 200);
   assert.equal((await resign.json()).game.termination_reason, "resignation");
+
+  const queueAfterGame = await fetch(`${baseUrl}/api/games`, {
+    method: "POST", headers: firstHeaders, body: JSON.stringify({ mode: "pvp", time_control: "bullet" }),
+  });
+  assert.equal(queueAfterGame.status, 202);
+  assert.ok((await queueAfterGame.json()).game.id);
 
   for (let attempt = 0; attempt < 7; attempt += 1) {
     const rejectedLogin = await fetch(`${baseUrl}/api/auth/login`, {
