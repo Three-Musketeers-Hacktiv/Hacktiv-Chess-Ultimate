@@ -420,6 +420,7 @@ export function useLiveGame({ socket, connected, roomId, me, meId }) {
   /* ───────── persistence for the post-game dashboard ───────── */
   useEffect(() => {
     if (!outcome || !myColor) return
+    const clock = info.timeControl
     lastGame.set({
       gameId: roomId,
       pgn: toMovetext(chess.history()),
@@ -427,9 +428,11 @@ export function useLiveGame({ socket, connected, roomId, me, meId }) {
       me,
       opponent: opponentName ? { username: opponentName } : null,
       outcome,
+      timeControl: typeof clock === 'string' ? clock : (clock?.id ?? null),
+      ranked: Boolean(info.ranked),
       endedAt: new Date().toISOString(),
     })
-  }, [outcome, snap.moves.length, chess, myColor, me, opponentName, roomId])
+  }, [outcome, snap.moves.length, chess, myColor, me, opponentName, roomId, info.timeControl, info.ranked])
 
   const getPgn = useCallback(() => toMovetext(chess.history()), [chess])
 

@@ -3,7 +3,6 @@ import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { HistoryPanel } from '../lobby/HistoryPanel'
 import { useAuth } from '../../hooks/useAuth'
 import { useSocket } from '../../hooks/useSocket'
-import { useTheme } from '../../hooks/useTheme'
 import { cn } from '../../lib/cn'
 import { Button } from '../ui/Button'
 import { ChevronIcon, SettingsIcon } from '../ui/Icons'
@@ -20,7 +19,6 @@ const navClass = ({ isActive }) =>
 export function AppShell() {
   const { user, logout } = useAuth()
   const { socket } = useSocket()
-  const { boardTheme } = useTheme()
   const navigate = useNavigate()
   const menuRef = useRef(null)
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
@@ -60,19 +58,9 @@ export function AppShell() {
   }
 
   return (
-    // `isolate` keeps the -z-10 scrim above this wallpaper but below the content. No transform here: it would
-    // re-anchor react-chessboard's `position: fixed` drag preview.
-    <div
-      className="relative isolate flex min-h-screen w-full min-w-0 max-w-full flex-col overflow-x-hidden"
-      style={{
-        backgroundImage: boardTheme.background,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-        backgroundAttachment: 'fixed',
-      }}
-    >
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 bg-black/60 backdrop-blur-sm" />
-      <header className="sticky top-0 z-40 flex w-full min-w-0 flex-row items-center justify-between border-b border-slate-900 bg-slate-950/60 px-4 py-3 backdrop-blur-md">
+    // No transform here: it would re-anchor react-chessboard's `position: fixed` drag preview.
+    <div className="relative isolate flex min-h-screen w-full min-w-0 max-w-full flex-col overflow-x-hidden bg-[#080C14]">
+      <header className="sticky top-0 z-40 flex w-full min-w-0 flex-row items-center justify-between border-b border-slate-900 bg-[#080C14] px-4 py-3">
         <div className="flex min-w-0 items-center gap-2 sm:gap-4">
           <Link to="/lobby" aria-label="Hacktiv Chess Ultimate — Lobby" className="shrink-0">
             <LogoMark className="sm:hidden" />
