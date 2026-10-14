@@ -25,9 +25,10 @@ function broadcast(request, result) {
     io.to(`game:${id}`).emit("draw_response", { room_id: id, decision: result.decision });
   }
   if (result.gameOver || result.game.status === "completed") {
+    const botName = result.game.mode === "bot" ? `Stockfish (${result.game.bot_difficulty})` : null;
     io.to(`game:${id}`).emit("game_over", {
       room_id: id, status: "completed", termination_reason: result.game.termination_reason,
-      winner: result.game.result === "1-0" ? result.white : result.game.result === "0-1" ? result.black : null,
+      winner: result.game.result === "1-0" ? result.white : result.game.result === "0-1" ? (result.black || botName) : null,
       result: result.game.result, pgn: result.pgn || null, clocks: result.game.clocks,
     });
   }
@@ -35,7 +36,7 @@ function broadcast(request, result) {
 
 function broadcastGameStarted(request, result) {
   const io = request.app.get("io");
-  if (!io || !result.matched || result.alreadyMatched) return;
+  if (!io || !result.matched || result.alreadyMatched || result.bot) return;
   const game = { ...result.game };
   delete game.color;
   delete game.opponent;
@@ -66,9 +67,9 @@ const createGame = asyncHandler(async (request, response) => {
   const receivedAt = new Date();
   const result = await gameService.createRoom(request.user.id, request.body, receivedAt);
   broadcastGameStarted(request, result);
-  response.status(result.matched ? 200 : 202).json({
+  response.status(result.bot ? 201 : result.matched ? 200 : 202).json({
     status: "success",
-    matchmaking: { status: result.matched ? "matched" : "searching" },
+    ...(result.bot ? {} : { matchmaking: { status: result.matched ? "matched" : "searching" } }),
     game: result.game,
   });
 });
@@ -94,8 +95,9 @@ const makeMove = asyncHandler(async (request, response) => {
       game: result.game,
     });
   }
+  const botReservation = result.botReservation;
   response.json({
-    status: "success", move: result.move || null, bot_move: null, bot_move_pending: false,
+    status: "success", move: result.move || null, bot_move: null, bot_move_pending: Boolean(result.botMovePending),
     fen: result.game.fen, pgn: result.pgn || null,
     history: result.history?.map((item) => ({
       ply: item.ply, color: item.color, actor: item.color === "w" ? result.white : result.black, from: item.from_square,
@@ -104,6 +106,14 @@ const makeMove = asyncHandler(async (request, response) => {
     clocks: result.game.clocks, game_status: result.game.status, result: result.game.result,
     termination_reason: result.game.termination_reason,
   });
+  if (botReservation) {
+    void gameService.playBotMove(request.params.id, botReservation)
+      .then((botResult) => broadcast(request, botResult))
+      .catch((error) => {
+        console.error(`Bot move failed for game ${request.params.id}: ${error.message}`);
+        request.app.get("retryBotTurn")?.(request.params.id, (result) => broadcast(request, result));
+      });
+  }
 });
 
 const getGame = asyncHandler(async (request, response) => {

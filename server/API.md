@@ -4,7 +4,7 @@ Dokumen ini mendefinisikan kontrak backend MVP berbasis Node.js dan Express. HTT
 
 ## Status implementasi
 
-Autentikasi, home, dan alur PvP yang didaftar di bawah sudah tersedia: random matchmaking berdasarkan preset waktu, pembatalan antrean, langkah legal, detail history, game aktif untuk penonton, resign, tawaran/klaim remis, jam server, dan Socket.IO. Join by room belum termasuk MVP. **Mode bot, daftar history lintas game, profil terpisah, serta analisis Stockfish masih rancangan dan belum tersedia.** Body `mode: "bot"` pada `POST /api/games` saat ini ditolak.
+Autentikasi, home, alur PvP, dan game bot yang didaftar di bawah tersedia. Mode bot memerlukan binary Stockfish yang dapat dijalankan melalui `STOCKFISH_PATH`. Join by room belum termasuk MVP. Daftar history lintas game, profil terpisah, dan analisis Stockfish masih rancangan.
 
 ## Konvensi
 
@@ -15,7 +15,7 @@ Autentikasi, home, dan alur PvP yang didaftar di bawah sudah tersedia: random ma
 - Parameter `:id` game yang bukan UUID mengembalikan `400 INVALID_GAME_ID`.
 - **FEN** (*Forsyth–Edwards Notation*) merepresentasikan snapshot posisi papan pada satu saat, termasuk giliran yang harus jalan. API mengembalikan FEN terkini pada game dan FEN setelah langkah bila diperlukan.
 - **PGN** (*Portable Game Notation*) merepresentasikan urutan langkah game, misalnya `1. e4 e5 2. Nf3 Nc6`. History langkah terstruktur disimpan di database; backend membentuk PGN dari langkah yang tersimpan.
-- Backend menggunakan `chess.js` v1.4.0 untuk memvalidasi langkah PvP, menjaga posisi kanonis, serta membentuk FEN/PGN. Integrasi Stockfish belum tersedia.
+- Backend menggunakan `chess.js` v1.4.0 untuk memvalidasi langkah PvP dan bot, menjaga posisi kanonis, serta membentuk FEN/PGN. Stockfish memilih langkah bot melalui UCI; backend tetap memvalidasi dan menyimpan langkahnya.
 - Registrasi dan login wajib sebelum masuk atau membatalkan antrean PvP.
 
 ## Skema database
@@ -86,7 +86,7 @@ Satu baris mewakili satu langkah (half-move).
 - Partial unique index mengizinkan paling banyak satu antrean PvP berstatus `waiting` untuk setiap `white_player_id`. Pada MVP, satu pengguna hanya boleh memiliki satu game PvP aktif (`waiting` atau `in_progress`); game baru dapat dimulai setelah game tersebut selesai.
 - Hasil kosong sebelum `completed` dan wajib terisi sesudahnya. Waktu mulai terisi ketika game dimulai; waktu selesai hanya terisi ketika game selesai.
 - Jam kedua pemain diinisialisasi dari preset. `turn_started_at` menjadi referensi server untuk jam yang sedang berjalan. Response mengirim `white_ms` dan `black_ms` sebagai integer JSON meskipun kolom PostgreSQL bertipe `BIGINT`. Saat game selesai, timestamp giliran dan tawaran remis dikosongkan.
-- `draw_offer_by_player_id` hanya boleh berupa salah satu ID pemain PvP; pada game bot nilainya harus `NULL`. `termination_reason` dapat berupa `checkmate`, `stalemate`, `dead_position`, `resignation`, `timeout`, `draw_agreement`, `threefold_repetition`, `fivefold_repetition`, `fifty_move_rule`, atau `seventy_five_move_rule`.
+- `draw_offer_by_player_id` hanya boleh berupa salah satu ID pemain PvP; pada game bot nilainya harus `NULL`. `termination_reason` dapat berupa `checkmate`, `stalemate`, `dead_position`, `resignation`, `timeout`, `draw_agreement`, `threefold_repetition`, `fivefold_repetition`, `fifty_move_rule`, `seventy_five_move_rule`, atau `engine_failure`.
 - `ply > 0`; `color` hanya `w`/`b`; petak asal/tujuan harus berbentuk `[a-h][1-8]`; `promotion` hanya `q`/`r`/`b`/`n` atau `NULL`.
 - `actor_type = 'player'` memerlukan `player_id`; `actor_type = 'bot'` mengharuskan `player_id` kosong. Kecocokan ID pemain dengan warna dan mode bot diperiksa service game dalam transaksi.
 - Constraint FK dan CHECK ditegakkan di PostgreSQL. Indeks unik: `users.username`, `users.email`, (`game_id`, `ply`), serta antrean PvP aktif per `white_player_id`. Indeks query: (`white_player_id`, `created_at`), (`black_player_id`, `created_at`), dan (`mode`, `status`, `created_at`).
@@ -144,7 +144,7 @@ Response `200`:
     "stats": { "wins": 4, "draws": 1, "losses": 2 },
     "game_modes": [
       { "id": "pvp", "label": "PvP", "status": "available" },
-      { "id": "bot", "label": "Melawan Bot", "status": "planned" }
+      { "id": "bot", "label": "Melawan Bot", "status": "available" }
     ],
     "features": [
       { "id": "history", "label": "Riwayat Permainan", "status": "planned" },
@@ -156,7 +156,7 @@ Response `200`:
 }
 ```
 
-Frontend hanya memulai PvP setelah pengguna memilih mode dan memanggil `POST /api/games`. Mode bot belum tersedia.
+Client mengirim mode pilihan ke `POST /api/games`. Mode bot dapat digunakan jika binary Stockfish tersedia di backend.
 
 ### Registrasi
 
@@ -242,13 +242,15 @@ Jika lawan belum tersedia, response `202` menempatkan pemain dalam antrean:
 }
 ```
 
-Body melawan bot (rancangan; belum didukung):
+Body melawan bot:
 
 ```json
 { "mode": "bot", "time_control": "rapid", "difficulty": "medium" }
 ```
 
-Body bot tersebut ditolak pada implementasi saat ini. Setelah fitur bot dibuat, game direncanakan dimulai dengan pengguna sebagai putih dan Stockfish sebagai hitam; `difficulty` akan diwajibkan dan dipetakan di server.
+Game bot dimulai dengan pengguna sebagai putih dan Stockfish sebagai hitam. `difficulty` wajib dan dipetakan di server ke Stockfish `Skill Level` mudah `0`, sedang `5`, atau sulit `10`. Response `201` mengembalikan game berstatus `in_progress`. Jika binary belum tersedia, server mengembalikan `503 ENGINE_UNAVAILABLE`.
+
+Status bot pada `GET /` adalah `available` hanya jika file pada `STOCKFISH_PATH` dapat diakses server; selain itu responsenya `planned`. Untuk development, isi variabel tersebut di `server/.env`. Pada deployment, path harus menunjuk ke binary yang tersedia di container.
 
 Jika pemain lain sudah menunggu dengan preset yang sama, response `200` mengembalikan game aktif dan warna hitam untuk pemain yang baru dipasangkan. Backend mengurutkan antrean dari yang paling lama dan memakai satu advisory transaction lock PostgreSQL untuk seluruh preset. Jika request diulang setelah match, backend mengembalikan game aktif yang sama beserta warna dan lawannya; retry tidak membuat game kedua atau menyiarkan ulang `game_started`. Pengguna hanya boleh memiliki satu game PvP aktif; memilih preset berbeda saat masih mengantre menghasilkan `409 MATCHMAKING_ALREADY_QUEUED`.
 
@@ -316,7 +318,7 @@ Untuk langkah legal, server menghitung waktu pemain sampai `receivedAt`, menyimp
 
 Tingkat bot dipetakan ke Stockfish `Skill Level`: mudah `0`, sedang `5`, sulit `10`. Ini tingkat relatif, bukan rating Elo yang dijanjikan. Jangan atur `UCI_Elo` bersama `Skill Level` dan jangan menerima opsi UCI mentah dari klien.
 
-Pada game bot, Stockfish berpikir di luar transaksi database. Jalankan maksimal dua proses pencarian bersamaan, masing-masing `Threads = 1`, dengan maksimal lima pekerjaan yang menunggu. Batasi langkah bot hingga 1000 ms dan analisis PGN hingga 5000 ms; prioritaskan pekerjaan bot. Slot bot wajib dicadangkan sebelum menyimpan langkah pemain. Jika kapasitas penuh, kembalikan `503 ENGINE_BUSY` dan jangan simpan langkah pemain. Lepaskan slot yang sudah dicadangkan jika validasi langkah atau transaksi database gagal. Sebelum menyimpan hasil engine, server mengunci ulang game dan memastikan game masih aktif, giliran masih milik bot, FEN belum berubah, dan jam bot belum habis. Langkah engine divalidasi dengan `chess.js` sebelum disimpan.
+Pada game bot, Stockfish berpikir di luar transaksi database. Jalankan maksimal dua proses pencarian bersamaan, masing-masing `Threads = 1`, dengan maksimal lima pekerjaan yang menunggu. Batasi langkah bot hingga 1000 ms per gerakan. Slot bot wajib dicadangkan sebelum menyimpan langkah pemain. Jika kapasitas penuh, kembalikan `503 ENGINE_BUSY` dan jangan simpan langkah pemain. Lepaskan slot yang sudah dicadangkan jika validasi atau transaksi database gagal. Sebelum menyimpan hasil engine, server mengunci ulang game dan memastikan game masih aktif, giliran masih milik bot, FEN belum berubah, dan jam bot belum habis. Langkah engine divalidasi dengan `chess.js` sebelum disimpan. Jika proses engine gagal, game diakhiri sebagai remis dengan `termination_reason: "engine_failure"`. Saat pemulihan setelah restart, game yang belum mendapat slot karena antrean penuh tetap aktif dan dicoba ulang; error database sementara juga dicoba ulang dan tidak dianggap sebagai kegagalan engine.
 
 Contoh response `200` untuk PvP:
 
@@ -358,7 +360,7 @@ Tawaran remis hanya tersedia setelah kedua pemain melakukan setidaknya satu lang
 
 Hanya pemain yang sedang mendapat giliran dapat mengklaim remis berdasarkan posisi saat ini. Server memeriksa history sebelum menerima klaim. Klaim berdasarkan langkah yang diniatkan tidak termasuk MVP. Klaim valid menyelesaikan game sebagai remis; klaim yang tidak valid menghasilkan `409` dan menambahkan dua menit ke jam lawan, mengikuti aturan catur yang dipakai MVP.
 
-Game berakhir otomatis pada checkmate, stalemate, dead position yang dikenali, fivefold repetition, aturan 75 langkah, atau timeout. Untuk MVP, dead position hanya dikenali saat `chess.js` `isInsufficientMaterial()` mengembalikan `true`; aturan ini praktis dan tidak berusaha mendeteksi semua posisi remis atau menyalin seluruh aturan Chess.com. Saat timeout, hasil remis hanya jika `isInsufficientMaterial()` mengembalikan `true` untuk seluruh posisi; selain itu pemain yang kehabisan waktu kalah. Resign saat game masih aktif langsung memberi kemenangan kepada lawan. Backend menghitung fivefold repetition dan 75 langkah dengan memutar ulang semua langkah dari posisi awal. Kunci posisi pengulangan memasukkan susunan bidak, sisi yang bergerak, hak rokade, dan kemungkinan en passant yang legal. Threefold repetition dan aturan 50 langkah diajukan sebagai klaim untuk posisi saat ini; checkmate pada langkah terakhir mendahului aturan 75 langkah. Remis yang disepakati juga mengakhiri game.
+Game berakhir otomatis pada checkmate, stalemate, dead position yang dikenali, fivefold repetition, aturan 75 langkah, timeout, atau kegagalan engine (`engine_failure`). Untuk MVP, dead position hanya dikenali saat `chess.js` `isInsufficientMaterial()` mengembalikan `true`; aturan ini praktis dan tidak berusaha mendeteksi semua posisi remis atau menyalin seluruh aturan Chess.com. Saat timeout, hasil remis hanya jika `isInsufficientMaterial()` mengembalikan `true` untuk seluruh posisi; selain itu pemain yang kehabisan waktu kalah. Resign saat game masih aktif langsung memberi kemenangan kepada lawan. Backend menghitung fivefold repetition dan 75 langkah dengan memutar ulang semua langkah dari posisi awal. Kunci posisi pengulangan memasukkan susunan bidak, sisi yang bergerak, hak rokade, dan kemungkinan en passant yang legal. Threefold repetition dan aturan 50 langkah diajukan sebagai klaim untuk posisi saat ini; checkmate pada langkah terakhir mendahului aturan 75 langkah. Remis yang disepakati juga mengakhiri game.
 
 ### Riwayat game pengguna
 
@@ -427,7 +429,7 @@ Client emit `watch_game`:
 { "room_id": "<uuid>" }
 ```
 
-Untuk mode PvP berstatus `in_progress`, pengguna terautentikasi mana pun dapat subscribe, termasuk penonton. Game yang masih dalam antrean tidak bisa di-subscribe. Saat matchmaking berhasil, server mengirim `game_started` secara privat ke koneksi Socket.IO milik kedua pemain; payload mencakup warna dan lawan. Setelah itu, klien memanggil `watch_game` untuk menerima `game_state` berisi `room_id`, FEN, PGN, nama pemain, status, hasil, preset waktu, dan snapshot jam bertanda `as_of`. Perubahan game disimpan lebih dahulu; setelah transaksi commit, server langsung menyiarkan `move` atau `game_over` kepada semua subscriber. Antrean hanya mengurutkan aksi pada game yang sama dan tidak menahan broadcast sampai ada respons klien atau menghentikan game lain. Snapshot subscribe dibaca dari state tersimpan agar klien yang reconnect pulih dari event yang terlewat. Subscribe hanya memberi hak baca; endpoint `POST /api/games/:id/moves` tetap menolak pengguna yang bukan pemain dengan `403`.
+Untuk mode PvP berstatus `in_progress`, pengguna terautentikasi mana pun dapat subscribe, termasuk penonton. Game bot hanya dapat di-subscribe oleh pemiliknya. Game PvP yang masih dalam antrean tidak bisa di-subscribe. Saat matchmaking berhasil, server mengirim `game_started` secara privat ke koneksi Socket.IO milik kedua pemain; payload mencakup warna dan lawan. Setelah itu, klien memanggil `watch_game` untuk menerima `game_state` berisi `room_id`, FEN, PGN, nama pemain, mode, tingkat bot bila ada, status, hasil, preset waktu, dan snapshot jam bertanda `as_of`. Perubahan game disimpan lebih dahulu; setelah transaksi commit, server langsung menyiarkan `move` atau `game_over` kepada semua subscriber. Antrean hanya mengurutkan aksi pada game yang sama dan tidak menahan broadcast sampai ada respons klien atau menghentikan game lain. Snapshot subscribe dibaca dari state tersimpan agar klien yang reconnect pulih dari event yang terlewat. Subscribe hanya memberi hak baca; endpoint `POST /api/games/:id/moves` tetap menolak pengguna yang bukan pemain dengan `403`.
 
 ### Event server
 

@@ -6,7 +6,11 @@ const app = require("./src/app");
 const { sequelize } = require("./src/models");
 const authenticateSocket = require("./src/socket/auth");
 const registerGameSocket = require("./src/socket/game.socket");
-const { expireGame, findActiveGameIds } = require("./src/services/game.service");
+const stockfish = require("./src/services/stockfish.service");
+const { createBotRecoveryQueue } = require("./src/services/bot-recovery.service");
+const {
+  expireGame, findActiveGameIds, findPendingBotGames, playBotMove, failPendingBotTurn,
+} = require("./src/services/game.service");
 
 const port = Number(process.env.PORT || 3000);
 const allowedOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173")
@@ -16,6 +20,12 @@ const allowedOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173")
 const httpServer = http.createServer(app);
 let timeoutInterval;
 let checkingTimeouts = false;
+const botRecovery = createBotRecoveryQueue({
+  reserveBotMove: () => stockfish.reserveBotMove(),
+  playBotMove,
+  failPendingBotTurn,
+});
+app.set("retryBotTurn", (gameId, onResult) => botRecovery.enqueue([gameId], onResult));
 const io = new Server(httpServer, {
   cors: {
     origin: allowedOrigins,
@@ -53,6 +63,8 @@ async function startServer() {
     }
   };
   await checkTimeouts();
+  const pendingBotGames = await findPendingBotGames();
+  botRecovery.enqueue(pendingBotGames);
   timeoutInterval = setInterval(checkTimeouts, 1000);
   timeoutInterval.unref();
 
@@ -63,6 +75,7 @@ async function startServer() {
 
 async function stopServer() {
   clearInterval(timeoutInterval);
+  botRecovery.stop();
   io.close();
   await sequelize.close();
   process.exit(0);
