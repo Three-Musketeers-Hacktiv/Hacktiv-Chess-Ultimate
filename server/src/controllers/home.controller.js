@@ -36,6 +36,7 @@ const getHome = async (request, response, next) => {
           { id: "bot", label: "Melawan Bot", status: stockfishAvailable ? "available" : "planned" },
         ],
         features: [
+          { id: "profile", label: "Profil dan Statistik", status: "available" },
           { id: "history", label: "Riwayat Permainan", status: "available" },
           { id: "analysis", label: "Analisis Permainan", status: stockfishAvailable ? "available" : "planned" },
           { id: "daily_puzzle", label: "Puzzle Harian", status: "planned" },

@@ -44,6 +44,7 @@ MVP belum memiliki logout yang mencabut token, refresh token, verifikasi email, 
 - Menonton game PvP yang sedang berlangsung. Join by room atau tantangan teman belum termasuk MVP.
 - Validasi langkah dengan `chess.js`; menyimpan history/FEN, membentuk PGN, dan mengurutkan aksi per game pada satu proses.
 - Menampilkan riwayat lintas game milik pengguna dengan cursor pagination, detail dan langkah game, daftar PvP aktif, serta snapshot baca-saja untuk penonton.
+- Profil terpisah melalui `GET /api/profile/me`, dengan statistik menang/seri/kalah dan hingga 50 game selesai terbaru beserta PGN.
 - Game melawan Stockfish dengan tingkat easy/medium/hard, empat preset waktu, validasi langkah engine, dan penyimpanan langkah bot.
 - Analisis pascapertandingan per langkah melalui `POST /api/games/:id/analysis`; hanya pemain game selesai yang dapat meminta analisis. Posisi dibentuk dari history database, dengan batas 60 ply.
 - Pencarian analisis dan langkah bot berbagi kapasitas Stockfish: maksimal dua proses aktif dan lima pekerjaan menunggu. Analisis memakai satu thread per proses, pencarian 75 ms per posisi, batas proses 15 detik, dan batas antrean 10 detik.
@@ -56,7 +57,7 @@ MVP belum memiliki logout yang mencabut token, refresh token, verifikasi email, 
 
 ## Belum diimplementasikan
 
-- Profil/statistik terpisah, rating, pembukaan favorit, dan grafik perkembangan.
+- Rating, pembukaan favorit, dan grafik perkembangan.
 - Puzzle, turnamen, teman/chat/klub, gamifikasi, dan antarmuka frontend.
 - Antrean game dan rate limit berbasis memori hanya sesuai satu instance; deployment beberapa instance perlu store dan pengurutan bersama.
 
@@ -151,6 +152,6 @@ History `game_moves` menjadi sumber PGN; PGN dibentuk saat dibutuhkan. `games.cu
 
 ## Status implementasi
 
-Fondasi server, alur PvP, dan game bot Stockfish tersedia. Analisis Stockfish belum tersedia. Kontrak endpoint dan event ada di [API.md](./API.md).
+Fondasi server, profil/statistik dasar, alur PvP, game bot, riwayat, dan analisis pascapertandingan tersedia. Bot dan analisis Stockfish memerlukan binary yang dikonfigurasi di `STOCKFISH_PATH`. Kontrak endpoint dan event ada di [API.md](./API.md).
 
 Rate limit register/login saat ini disimpan di memori proses, sesuai satu instance MVP; gunakan penyimpanan bersama sebelum menjalankan beberapa instance. Untuk deployment production, isi kredensial database dan `JWT_SECRET` di environment variables platform. Jangan commit `.env` atau secret.
