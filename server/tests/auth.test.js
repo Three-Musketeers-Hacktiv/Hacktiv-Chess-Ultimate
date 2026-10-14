@@ -6,16 +6,26 @@ const { once } = require("node:events");
 const { after, before, test } = require("node:test");
 const http = require("node:http");
 const { compare } = require("../src/helpers/bcrypt");
-const { verifyToken } = require("../src/helpers/jwt");
+const { signToken, verifyToken } = require("../src/helpers/jwt");
 const authenticateSocket = require("../src/socket/auth");
+const registerGameSocket = require("../src/socket/game.socket");
 const app = require("../src/app");
-const { sequelize, User } = require("../src/models");
+const { sequelize, Game, User } = require("../src/models");
 
 const server = http.createServer(app);
 const suffix = Date.now();
 const email = `auth-${suffix}@example.com`;
 const username = `auth_${suffix}`;
 let baseUrl;
+let emittedEvents = [];
+let createdGameId;
+let secondEmailCleanup;
+
+app.set("io", {
+  to(room) {
+    return { emit: (event, data) => emittedEvents.push({ room, event, data }) };
+  },
+});
 
 before(async () => {
   await sequelize.authenticate();
@@ -25,6 +35,8 @@ before(async () => {
 });
 
 after(async () => {
+  if (createdGameId) await Game.destroy({ where: { id: createdGameId } });
+  if (secondEmailCleanup) await User.destroy({ where: { email: secondEmailCleanup } });
   await User.destroy({ where: { email } });
   await new Promise((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve())),
@@ -127,6 +139,93 @@ test("register hashes passwords, login issues JWT, and protected home requires J
   const homeBody = await home.json();
   assert.equal(homeBody.home.user.username, username);
   assert.deepEqual(homeBody.home.stats, { wins: 0, draws: 0, losses: 0 });
+
+  const secondEmail = `pvp-${suffix}@example.com`;
+  const secondUsername = `pvp_${suffix}`;
+  secondEmailCleanup = secondEmail;
+  const secondUser = await User.create({ username: secondUsername, email: secondEmail, password_hash: "passwordrahasia123" });
+  const secondToken = signToken({ sub: secondUser.id });
+  const firstHeaders = { authorization: `Bearer ${loginBody.token}`, "content-type": "application/json" };
+  const secondHeaders = { authorization: `Bearer ${secondToken}`, "content-type": "application/json" };
+
+  const createdRoom = await fetch(`${baseUrl}/api/games`, {
+    method: "POST", headers: firstHeaders,
+    body: JSON.stringify({ mode: "pvp", time_control: "bullet" }),
+  });
+  assert.equal(createdRoom.status, 201);
+  const room = (await createdRoom.json()).game;
+  createdGameId = room.id;
+  assert.equal(room.status, "waiting");
+  assert.equal(room.color, "w");
+
+  const openRooms = await fetch(`${baseUrl}/api/games/open`, { headers: firstHeaders });
+  assert.ok((await openRooms.json()).games.some((game) => game.id === room.id));
+
+  const ownJoin = await fetch(`${baseUrl}/api/games/${room.id}/join`, { method: "POST", headers: firstHeaders });
+  assert.equal(ownJoin.status, 409);
+
+  const joined = await fetch(`${baseUrl}/api/games/${room.id}/join`, { method: "POST", headers: secondHeaders });
+  assert.equal(joined.status, 200);
+  assert.equal((await joined.json()).game.color, "b");
+
+  const wrongTurn = await fetch(`${baseUrl}/api/games/${room.id}/moves`, {
+    method: "POST", headers: secondHeaders, body: JSON.stringify({ from: "e7", to: "e5" }),
+  });
+  assert.equal(wrongTurn.status, 409);
+  const illegalMove = await fetch(`${baseUrl}/api/games/${room.id}/moves`, {
+    method: "POST", headers: firstHeaders, body: JSON.stringify({ from: "e2", to: "e5" }),
+  });
+  assert.equal(illegalMove.status, 400);
+
+  const whiteMove = await fetch(`${baseUrl}/api/games/${room.id}/moves`, {
+    method: "POST", headers: firstHeaders, body: JSON.stringify({ from: "e2", to: "e4" }),
+  });
+  assert.equal(whiteMove.status, 200);
+  const whiteMoveBody = await whiteMove.json();
+  assert.equal(whiteMoveBody.history.length, 1);
+  assert.equal(whiteMoveBody.history[0].san, "e4");
+  assert.equal(whiteMoveBody.clocks.active_color, "b");
+  assert.ok(emittedEvents.some((item) => item.event === "move" && item.room === `game:${room.id}`));
+
+  const blackMove = await fetch(`${baseUrl}/api/games/${room.id}/moves`, {
+    method: "POST", headers: secondHeaders, body: JSON.stringify({ from: "e7", to: "e5" }),
+  });
+  assert.equal(blackMove.status, 200);
+  assert.equal((await blackMove.json()).history.length, 2);
+
+  const detail = await fetch(`${baseUrl}/api/games/${room.id}`, { headers: firstHeaders });
+  assert.equal(detail.status, 200);
+  assert.match((await detail.json()).game.pgn, /1\. e4 e5 \*/);
+  const live = await fetch(`${baseUrl}/api/games/live`, { headers: firstHeaders });
+  assert.ok((await live.json()).games.some((game) => game.id === room.id));
+
+  let connectionHandler;
+  registerGameSocket({ on: (_event, handler) => { connectionHandler = handler; } });
+  const socketHandlers = {};
+  const socketEvents = [];
+  const fakeSocket = {
+    data: { user: { id: user.id } },
+    on: (event, handler) => { socketHandlers[event] = handler; },
+    join: async (name) => socketEvents.push(`joined:${name}`),
+    leave: async (name) => socketEvents.push(`left:${name}`),
+    emit: (event, data) => socketEvents.push({ event, data }),
+  };
+  connectionHandler(fakeSocket);
+  await socketHandlers.watch_game({ room_id: room.id });
+  assert.ok(socketEvents.some((event) => typeof event === "string" && event === `joined:game:${room.id}`));
+  assert.ok(socketEvents.some((event) => typeof event === "object" && event.event === "game_state"));
+
+  const drawOffer = await fetch(`${baseUrl}/api/games/${room.id}/draw-offers`, { method: "POST", headers: firstHeaders });
+  assert.equal(drawOffer.status, 200);
+  assert.ok(emittedEvents.some((item) => item.event === "draw_offer" && item.room === `game:${room.id}`));
+  const declineDraw = await fetch(`${baseUrl}/api/games/${room.id}/draw-offers/response`, {
+    method: "POST", headers: secondHeaders, body: JSON.stringify({ decision: "decline" }),
+  });
+  assert.equal(declineDraw.status, 200);
+
+  const resign = await fetch(`${baseUrl}/api/games/${room.id}/resign`, { method: "POST", headers: secondHeaders });
+  assert.equal(resign.status, 200);
+  assert.equal((await resign.json()).game.termination_reason, "resignation");
 
   for (let attempt = 0; attempt < 7; attempt += 1) {
     const rejectedLogin = await fetch(`${baseUrl}/api/auth/login`, {
