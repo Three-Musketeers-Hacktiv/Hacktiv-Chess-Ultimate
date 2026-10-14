@@ -26,6 +26,16 @@ import { orientationOf } from '../lib/chess'
 import { timeControlLabel } from '../lib/config'
 import { currentRating } from '../lib/elo'
 
+const CONTROL =
+  'flex w-full min-w-0 flex-1 items-center justify-center rounded-xl py-3 text-center text-[10px] font-semibold uppercase tracking-widest transition-all duration-300 active:scale-[0.99] sm:text-[11px]'
+
+const CONTROL_REVIEW = `${CONTROL} border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 hover:border-emerald-500/40 hover:bg-emerald-500/20`
+
+const CONTROL_REMATCH = `${CONTROL} border border-indigo-500/20 bg-indigo-500/10 text-indigo-400 hover:border-indigo-500/40 hover:bg-indigo-500/20 disabled:pointer-events-none disabled:opacity-50`
+
+const CONTROL_FIND =
+  'group flex w-full items-center justify-center gap-2 rounded-xl border border-slate-900/60 bg-slate-950/40 py-3 text-center text-[11px] font-semibold uppercase tracking-widest text-slate-300 shadow-md transition-all duration-300 hover:border-slate-700/80 hover:bg-slate-900/80 hover:text-white active:scale-[0.99]'
+
 export default function ArenaPage() {
   const { roomId } = useParams()
   return <ArenaSession key={roomId} roomId={roomId} />
@@ -268,25 +278,38 @@ function ArenaSession({ roomId }) {
           </div>
         </Card>
 
-        <div className="flex gap-3">
-          {outcome ? (
-            <>
-              {!spectating && (
-                <>
-                  <Button className="flex-1" onClick={openAnalysis}>
-                    Review analysis
-                  </Button>
-                  <Button variant="violet" loading={rematchBusy} disabled={rematchBusy} onClick={startRematch}>
-                    Rematch
-                  </Button>
-                </>
-              )}
-              <Button variant="secondary" className={spectating ? 'flex-1' : undefined} onClick={goLobby}>
-                <SearchIcon className="size-4" />
+        {outcome ? (
+          <div className="mt-4 w-full">
+            {!spectating && (
+              <div className="mb-3 flex w-full flex-row items-center gap-3 px-2">
+                <button type="button" onClick={openAnalysis} className={CONTROL_REVIEW}>
+                  Review Analisis
+                </button>
+                <button
+                  type="button"
+                  disabled={rematchBusy}
+                  aria-busy={rematchBusy}
+                  onClick={startRematch}
+                  className={CONTROL_REMATCH}
+                >
+                  {rematchStatus === 'requesting' || rematchStatus === 'waiting'
+                    ? 'Waiting'
+                    : rematchBusy
+                      ? 'Starting'
+                      : 'Rematch'}
+                </button>
+              </div>
+            )}
+            <div className="w-full px-2">
+              <button type="button" onClick={goLobby} className={CONTROL_FIND}>
+                <SearchIcon className="size-3.5 text-slate-400 transition-colors duration-300 group-hover:text-white" />
                 Cari Player Baru
-              </Button>
-            </>
-          ) : live && !spectating ? (
+              </button>
+            </div>
+          </div>
+        ) : (
+        <div className="flex gap-3">
+          {live && !spectating ? (
             <>
               {/* The server only takes draw offers in PvP; against Stockfish you can still claim by rule. */}
               {!isBot && (
@@ -315,6 +338,7 @@ function ArenaSession({ roomId }) {
             </Button>
           )}
         </div>
+        )}
       </aside>
 
       {/* ───────── Overlays ───────── */}
@@ -336,8 +360,11 @@ function ArenaSession({ roomId }) {
         rematchStatus={rematchStatus}
         rematchError={pvpRematch.error}
         onRematch={startRematch}
+        timeControl={typeof info.timeControl === 'string' ? info.timeControl : info.timeControl?.id}
+        ranked={Boolean(info.ranked) && !isBot}
+        gameMode={info.mode}
+        opponentName={myColor === 'w' ? info.black : info.white}
         onAnalyze={openAnalysis}
-        onNewOpponent={goLobby}
         onDismiss={closeOver}
       />
 

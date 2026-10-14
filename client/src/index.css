@@ -63,13 +63,9 @@
   }
 
   body {
-    @apply bg-obsidian font-sans text-slate-300 antialiased;
+    @apply font-sans text-slate-300 antialiased;
+    background-color: #080c14;
     min-height: 100vh;
-    /* Obsidian atmosphere: faint amethyst bloom top-left, emerald hush bottom-right. */
-    background-image:
-      radial-gradient(60rem 40rem at 8% -10%, rgba(139, 92, 246, 0.1), transparent 60%),
-      radial-gradient(50rem 36rem at 100% 110%, rgba(16, 185, 129, 0.06), transparent 60%);
-    background-attachment: fixed;
   }
 
   ::selection {
