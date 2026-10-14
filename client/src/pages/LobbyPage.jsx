@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { Alert } from '../components/ui/Alert'
 import { Button } from '../components/ui/Button'
 import { Eyebrow } from '../components/ui/Card'
-import { CpuIcon, SearchIcon, UsersIcon } from '../components/ui/Icons'
+import { SearchIcon } from '../components/ui/Icons'
 import { Spinner } from '../components/ui/Spinner'
 import { useAuth } from '../hooks/useAuth'
 import { useBotGame } from '../hooks/useBotGame'
@@ -67,64 +67,83 @@ function ComingSoonBadge({ children = 'Coming Soon' }) {
 }
 
 const GLASS =
-  'flex h-full w-full min-w-0 flex-col rounded-2xl border border-slate-800/40 bg-[#0F1524]/60 p-6 shadow-[0_8px_32px_0_rgba(0,0,0,0.4)] backdrop-blur-xl transition-all duration-300 hover:border-slate-700/60 hover:shadow-[0_8px_40px_0_rgba(0,0,0,0.6)]'
+  'flex h-full w-full min-w-0 flex-col rounded-2xl border border-slate-800/50 bg-[#0F1524]/40 p-5 backdrop-blur-md transition-all duration-300 hover:border-slate-700/60'
 
 const PILL_BASE =
-  'flex flex-col items-center justify-center rounded-xl border px-3 py-2 text-xs tracking-wide transition-all duration-200 disabled:opacity-40'
+  'min-w-0 flex-1 rounded-lg px-1 py-2 text-center text-[11px] font-medium tracking-wide transition-all duration-200 disabled:opacity-40'
 
-const PILL_OFF =
-  'border-slate-900/40 bg-slate-950/40 font-medium text-slate-400 hover:border-slate-800/80 hover:text-slate-200'
+const PILL_OFF = 'bg-slate-950/30 text-slate-500 hover:text-slate-400'
 
 const PILL_TIME_ON =
-  'border-emerald-500/30 bg-emerald-500/10 font-semibold text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.1)]'
+  'bg-emerald-500/10 font-semibold text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.1)]'
 
-const PILL_DIFF_ON =
-  'border-blue-500/30 bg-blue-500/10 font-semibold text-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.1)]'
+const LEVEL =
+  'min-w-0 flex-1 rounded-xl px-3 py-2 text-center text-xs tracking-wider transition-all duration-200 disabled:opacity-40'
+
+const LEVEL_OFF =
+  'border border-slate-900/60 bg-slate-950/40 font-semibold text-slate-500 hover:border-slate-800/80 hover:text-slate-400'
+
+const LEVEL_ON =
+  'border border-blue-500/40 bg-blue-500/10 font-bold text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.15)]'
+
+const CLOCK =
+  'min-w-0 flex-1 rounded-lg px-1.5 py-1 text-center text-[10px] font-medium tracking-wide transition-all duration-200 disabled:opacity-40'
+
+const CLOCK_OFF = 'border border-transparent bg-slate-950/20 text-slate-600 hover:text-slate-500'
+
+const CLOCK_ON = 'border border-blue-500/20 bg-blue-500/5 text-blue-400/90'
 
 const ACTION_BASE =
-  'flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold tracking-wide transition-all duration-300 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-40'
+  'flex w-full items-center justify-center rounded-xl border border-slate-800/80 bg-[#161F32]/50 py-3 text-center text-[11px] font-semibold uppercase tracking-widest text-slate-300 transition-all duration-300 disabled:pointer-events-none disabled:opacity-40'
 
 const ACTION = cn(
   ACTION_BASE,
-  'border border-emerald-500/30 bg-linear-to-r from-emerald-500/10 to-teal-500/10 text-emerald-400 hover:border-emerald-500/50 hover:from-emerald-500/20 hover:to-teal-500/20 hover:shadow-[0_0_20px_rgba(16,185,129,0.15)]',
+  'hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-400 hover:shadow-[0_4px_20px_rgba(16,185,129,0.1)] active:scale-[0.995]',
 )
 
 const ACTION_BLUE = cn(
   ACTION_BASE,
-  'border border-blue-500/30 bg-linear-to-r from-blue-500/10 to-indigo-500/10 text-blue-400 hover:border-blue-500/50 hover:from-blue-500/20 hover:to-indigo-500/20 hover:shadow-[0_0_20px_rgba(59,130,246,0.15)]',
+  'hover:border-blue-500/40 hover:bg-blue-500/10 hover:text-blue-400 hover:shadow-[0_4px_20px_rgba(59,130,246,0.1)] active:scale-[0.995]',
 )
 
 const ACTION_AMBER = cn(
   ACTION_BASE,
-  'border border-amber-500/30 bg-linear-to-r from-amber-500/10 to-orange-500/10 text-amber-400 hover:border-amber-500/50 hover:from-amber-500/20 hover:to-orange-500/20 hover:shadow-[0_0_20px_rgba(245,158,11,0.15)]',
+  'hover:border-amber-500/40 hover:bg-amber-500/10 hover:text-amber-400 hover:shadow-[0_4px_20px_rgba(245,158,11,0.1)] active:scale-[0.995]',
 )
 
-function Kicker({ children, dot }) {
-  return (
-    <p className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
-      <span aria-hidden="true" className={cn('size-1 rounded-full', dot)} />
-      {children}
-    </p>
-  )
+const TITLE = 'text-lg font-semibold tracking-tight text-white'
+const BLURB = 'mb-5 mt-0.5 text-xs font-normal leading-relaxed text-slate-400'
+
+function Kicker({ children }) {
+  return <p className="mb-1 block text-[10px] font-bold uppercase tracking-[0.25em] text-slate-500">{children}</p>
 }
 
-function ModeCard({ className, icon, eyebrow, title, description, dot, children }) {
+function ModeCard({ className, eyebrow, title, description, tight, children }) {
   return (
     <section className={cn(GLASS, className)}>
-      <Kicker dot={dot}>
-        {icon}
-        {eyebrow}
-      </Kicker>
-      <h2 className="text-xl font-semibold tracking-tight text-white">{title}</h2>
-      <p className="mt-1 text-xs font-normal leading-relaxed text-slate-400">{description}</p>
-      <div className="mt-5 flex flex-1 flex-col">{children}</div>
+      <Kicker>{eyebrow}</Kicker>
+      <h2 className={TITLE}>{title}</h2>
+      {tight ? (
+        <div className="mt-0.5 space-y-3">
+          <p className="text-xs font-normal leading-relaxed text-slate-400">{description}</p>
+          {children}
+        </div>
+      ) : (
+        <>
+          <p className={BLURB}>{description}</p>
+          <div className="flex flex-1 flex-col">{children}</div>
+        </>
+      )}
     </section>
   )
 }
 
-function TimeControlPicker({ value, onChange, disabled, unsupported }) {
+function TimeControlPicker({ value, onChange, disabled, unsupported, activeClass = PILL_TIME_ON, compact = false }) {
+  const base = compact ? CLOCK : PILL_BASE
+  const idle = compact ? CLOCK_OFF : PILL_OFF
+  const selected = compact ? CLOCK_ON : activeClass
   return (
-    <div role="radiogroup" aria-label="Time control" className="grid w-full grid-cols-2 gap-2 sm:grid-cols-4">
+    <div role="radiogroup" aria-label="Time control" className="flex w-full gap-1.5">
       {TIME_CONTROLS.map((tc) => {
         const active = tc.id === value
         const soon = unsupported.includes(tc.id)
@@ -136,13 +155,13 @@ function TimeControlPicker({ value, onChange, disabled, unsupported }) {
             aria-checked={active}
             disabled={disabled || soon}
             onClick={() => onChange(tc.id)}
-            className={`${PILL_BASE} ${active ? PILL_TIME_ON : PILL_OFF}${soon ? ' pointer-events-none opacity-40' : ''}`}
+            className={`${base} ${active ? selected : idle}${soon ? ' pointer-events-none opacity-40' : ''}`}
           >
             <span className="block">{tc.label}</span>
-            <span className="mt-0.5 block font-mono text-[10px] text-slate-500">{tc.detail}</span>
+            {!compact && <span className="mt-0.5 block font-mono text-[9px] opacity-70">{tc.detail}</span>}
             {soon && (
-              <span className="mt-1 block font-mono text-[10px] uppercase tracking-widest text-slate-500/80">
-                Coming Soon
+              <span className="mt-0.5 block font-mono text-[8px] uppercase tracking-widest text-slate-500/80">
+                Soon
               </span>
             )}
           </button>
@@ -154,7 +173,7 @@ function TimeControlPicker({ value, onChange, disabled, unsupported }) {
 
 function DifficultyPicker({ value, onChange, disabled }) {
   return (
-    <div role="radiogroup" aria-label="Stockfish difficulty" className="grid w-full grid-cols-3 gap-2">
+    <div role="radiogroup" aria-label="Stockfish difficulty" className="flex w-full gap-1.5">
       {BOT_DIFFICULTIES.map((level) => {
         const active = level.id === value
         return (
@@ -165,10 +184,9 @@ function DifficultyPicker({ value, onChange, disabled }) {
             aria-checked={active}
             disabled={disabled}
             onClick={() => onChange(level.id)}
-            className={`${PILL_BASE} ${active ? PILL_DIFF_ON : PILL_OFF}`}
+            className={`${LEVEL} ${active ? LEVEL_ON : LEVEL_OFF}`}
           >
             <span className="block">{level.label}</span>
-            <span className="mt-0.5 block font-mono text-[10px] text-slate-500">{level.detail}</span>
           </button>
         )
       })}
@@ -231,13 +249,10 @@ function RankedCard({ className, searching, ranked, children, searchingView }) {
         searchingView
       ) : (
         <>
-          <Kicker dot="bg-emerald-400/80">Ranked · Elo K-32</Kicker>
-          <h2 className="text-xl font-semibold tracking-tight text-white">Competitive Ranked Match</h2>
-          <p className="mt-1 text-xs font-normal leading-relaxed text-slate-400">
-            Rated game against a rival within ±200 ELO. Win and climb; lose and your rating pays for it — the exact
-            change is shown the moment the game ends.
-          </p>
-          <div className="mt-5 flex-1">{children}</div>
+          <Kicker>Ranked · Elo K-32</Kicker>
+          <h2 className={TITLE}>Competitive Ranked Match</h2>
+          <p className={BLURB}>Rated game within ±200 ELO. Your rating moves when the game ends.</p>
+          <div className="flex flex-1 flex-col">{children}</div>
         </>
       )}
     </section>
@@ -267,8 +282,10 @@ export default function LobbyPage() {
     refresh()
   }, [refresh])
   const live = useLiveGames(!searching)
-  const [pvpTime, setPvpTime] = useState('bullet')
+  const [pvpTime, setPvpTime] = useState('blitz')
   const [rankedTime, setRankedTime] = useState('blitz')
+  const [stockfishTime, setStockfishTime] = useState('rapid')
+  const [isStockfishExpanded, setIsStockfishExpanded] = useState(false)
   const resolveTime = (selected) =>
     unsupported.includes(selected)
       ? (TIME_CONTROLS.find((tc) => !unsupported.includes(tc.id))?.id ?? selected)
@@ -280,7 +297,7 @@ export default function LobbyPage() {
   const me = user?.username?.toLowerCase()
 
   return (
-    <div className="min-h-full w-full min-w-0 animate-rise bg-[#080C14]">
+    <div className="min-h-screen w-full min-w-0 animate-rise bg-[#080C14]">
       <header className="min-w-0">
         <Eyebrow>Command center</Eyebrow>
         <h1 className="mt-2 text-xl font-semibold tracking-tight text-slate-200 sm:text-2xl">
@@ -307,13 +324,11 @@ export default function LobbyPage() {
         </div>
       )}
 
-      <section className="mt-8 grid w-full min-w-0 grid-cols-1 gap-6 lg:grid-cols-2" aria-label="Game modes">
+      <section className="mt-6 grid w-full min-w-0 grid-cols-1 gap-6 lg:grid-cols-2" aria-label="Game modes">
         <ModeCard
-          icon={<UsersIcon className="size-3" />}
-          dot="bg-emerald-400/80"
           eyebrow="Player vs Player"
           title="Instant PvP"
-          description="Choose how fast you want to play and hit “Cari Lawan” — you are paired with the next rival who picked the same time control."
+          description="Match the next rival who picked the same clock."
         >
           {searching && !searchingRanked ? (
             <Searching timeControl={mm.searchingFor} stage={mm.stage} connected={connected} onCancel={mm.cancel} />
@@ -358,39 +373,68 @@ export default function LobbyPage() {
           </div>
         </RankedCard>
 
-        <ModeCard
-          icon={<CpuIcon className="size-3" />}
-          dot="bg-blue-400/80"
-          eyebrow="Player vs Engine"
-          title={BOT.label}
-          description={BOT.blurb}
-        >
-          <div className="flex flex-1 flex-col items-center justify-center">
-            <DifficultyPicker value={difficulty} onChange={setDifficulty} disabled={busy} />
-            <button
-              type="button"
-              disabled={busy || bot.starting}
-              onClick={() => bot.start({ timeControl: resolveTime(pvpTime), difficulty })}
-              className={cn(ACTION_BLUE, 'mt-8 w-full')}
+        <section aria-label="Stockfish" className={GLASS}>
+          <div className="relative flex h-full w-full flex-row overflow-hidden">
+            <div
+              role="button"
+              tabIndex={0}
+              aria-expanded={isStockfishExpanded}
+              onClick={() => setIsStockfishExpanded((open) => !open)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  setIsStockfishExpanded((open) => !open)
+                }
+              }}
+              className={`flex min-w-0 cursor-pointer flex-col text-left transition-all duration-500 ease-in-out ${isStockfishExpanded ? 'w-1/2 pr-3' : 'w-full'}`}
             >
-              {bot.starting ? 'Starting…' : 'Play Stockfish'}
-            </button>
-            {/* Never blocks the button: it only explains a refusal in advance if `GET /` did not report the engine. */}
-            {homeStatus === 'ready' && !capabilities.bot && (
-              <p className="font-mono text-xs text-slate-500">
-                The server has not reported the engine as ready — it will answer if it cannot start the game.
+              <Kicker>Player vs Engine</Kicker>
+              <h2 className={TITLE}>{BOT.label}</h2>
+              <p className="mt-0.5 text-xs font-normal leading-relaxed text-slate-400">
+                Play White against the engine at the strength you choose.
               </p>
-            )}
+              <span className="mt-4 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+                Configure Match
+              </span>
+            </div>
+            <div
+              className={`flex h-full min-w-0 flex-col gap-3 transition-all duration-500 ease-in-out ${isStockfishExpanded ? 'w-1/2 translate-x-0 opacity-100' : 'pointer-events-none w-0 translate-x-full opacity-0'}`}
+            >
+              <DifficultyPicker value={difficulty} onChange={setDifficulty} disabled={busy || !isStockfishExpanded} />
+              <TimeControlPicker
+                compact
+                value={stockfishTime}
+                onChange={setStockfishTime}
+                disabled={busy || !isStockfishExpanded}
+                unsupported={unsupported}
+              />
+            </div>
           </div>
-        </ModeCard>
+          <button
+            type="button"
+            disabled={busy || bot.starting || !isStockfishExpanded}
+            onClick={() => bot.start({ timeControl: resolveTime(stockfishTime), difficulty })}
+            className={cn(
+              ACTION_BLUE,
+              'overflow-hidden transition-all duration-500 ease-in-out',
+              isStockfishExpanded ? 'mt-3 max-h-14 opacity-100' : 'pointer-events-none mt-0 max-h-0 border-transparent py-0 opacity-0',
+            )}
+          >
+            {bot.starting ? 'Starting…' : 'Play Stockfish'}
+          </button>
+          {/* Never blocks the button: it only explains a refusal in advance if `GET /` did not report the engine. */}
+          {homeStatus === 'ready' && !capabilities.bot && (
+            <p className="mt-3 font-mono text-xs text-slate-500">
+              The server has not reported the engine as ready — it will answer if it cannot start the game.
+            </p>
+          )}
+        </section>
 
         <article className={GLASS}>
-          <Kicker dot="bg-amber-400/80">Training</Kicker>
-          <h2 className="text-xl font-semibold tracking-tight text-white">Tactical Puzzles</h2>
-          <p className="mt-1 flex-1 text-xs font-normal leading-relaxed text-slate-400">
-            Unlimited tactics that climb from easy to hard. Miss a move and a fresh easy puzzle takes its place.
-          </p>
-          <Link to="/puzzles" className={cn(ACTION_AMBER, 'mt-5')}>
+          <Kicker>Training</Kicker>
+          <h2 className={TITLE}>Tactical Puzzles</h2>
+          <p className={BLURB}>Climb from easy to hard. A miss returns a fresh easy puzzle.</p>
+          <Link to="/puzzles" className={ACTION_AMBER}>
             Start Solving Puzzles
           </Link>
         </article>
