@@ -23,7 +23,7 @@ Command `npm start` menjalankan entry point yang sama tanpa mode watch. Sequeliz
 
 Untuk Railway, atur root directory service ke `server`, set `STOCKFISH_PATH=./.stockfish/stockfish`, dan deploy. Script `postinstall` mengunduh arsip Stockfish 19 resmi untuk Linux x64, memverifikasi SHA-256 dari metadata rilis GitHub, lalu menyiapkan executable. Deploy perlu akses jaringan saat build; platform Linux selain x64 saat ini tidak didukung script ini.
 
-Untuk database Supabase pada `NODE_ENV=production`, server memakai `DATABASE_URL` jika disetel; koneksi PostgreSQL melalui URL tersebut menggunakan SSL dan menggantikan variabel `DB_PRODUCTION_*`. Simpan connection string lengkap di Railway Variables, bukan di repository, dan ganti placeholder password dengan password database yang sebenarnya.
+Untuk database Supabase pada `NODE_ENV=production`, server memakai `DATABASE_URL` jika disetel; koneksi PostgreSQL melalui URL tersebut menggunakan SSL dan menggantikan variabel `DB_PRODUCTION_*`. Jika CA Supabase tidak termasuk trust store runtime, isi `SUPABASE_CA_CERT` dengan isi file CA PEM dari Database Settings → SSL Configuration di Supabase. Simpan keduanya di Railway Variables, bukan di repository, dan ganti placeholder password dengan password database yang sebenarnya.
 
 Untuk register dan login, backend menggunakan bcrypt dan JWT. Ganti `JWT_SECRET` di `.env` dengan secret acak sebelum menggunakan endpoint login. Login berlaku 7 hari; request ke `GET /` memerlukan header `Authorization: Bearer <token>`.
 

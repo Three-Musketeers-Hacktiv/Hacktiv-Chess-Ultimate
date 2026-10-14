@@ -24,6 +24,7 @@ function makeDatabaseConfig(environment, defaultDatabase, allowLocalDefaults = f
 function makeProductionConfig() {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) return makeDatabaseConfig("production", "hacktiv_chess_production");
+  const supabaseCa = process.env.SUPABASE_CA_CERT?.replace(/\\n/g, "\n");
 
   const url = new URL(connectionString);
   if (!(["postgres:", "postgresql:"].includes(url.protocol)) || !url.hostname || !url.pathname.slice(1)) {
@@ -37,7 +38,7 @@ function makeProductionConfig() {
     host: url.hostname,
     port: Number(url.port || 5432),
     dialect: "postgres",
-    dialectOptions: { ssl: { rejectUnauthorized: true } },
+    dialectOptions: { ssl: { ca: supabaseCa || undefined, rejectUnauthorized: true } },
     logging: false,
   };
 }
