@@ -12,7 +12,7 @@
     "db:migrate": "sequelize-cli db:migrate --env development",
     "db:migrate:testing": "sequelize-cli db:migrate --env test",
     "db:migrate:production": "sequelize-cli db:migrate --env production",
-    "test": "node tests/auth.test.js && node tests/logout.test.js && node tests/stockfish.test.js && node tests/bot-recovery.test.js && node tests/bot.test.js && node tests/history.test.js && node tests/analysis.test.js && node tests/profile.test.js"
+    "test": "node tests/auth.test.js && node tests/logout.test.js && node tests/stockfish.test.js && node tests/bot-recovery.test.js && node tests/bot.test.js && node tests/history.test.js && node tests/analysis.test.js && node tests/profile.test.js && node tests/analysis-pgn.test.js && node tests/elo.test.js && node tests/ranked-rematch.test.js && node tests/update-username.test.js"
   },
   "keywords": [],
   "author": "",

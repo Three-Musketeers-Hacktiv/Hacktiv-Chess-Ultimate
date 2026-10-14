@@ -1,5 +1,6 @@
 const gameService = require("../services/game.service");
 const gameAnalysisService = require("../services/game-analysis.service");
+const stockfish = require("../services/stockfish.service");
 
 function sendError(response, error) {
   if (error instanceof gameService.GameError) {
@@ -31,6 +32,7 @@ function broadcast(request, result) {
       room_id: id, status: "completed", termination_reason: result.game.termination_reason,
       winner: result.game.result === "1-0" ? result.white : result.game.result === "0-1" ? (result.black || botName) : null,
       result: result.game.result, pgn: result.pgn || null, clocks: result.game.clocks,
+      ranked: Boolean(result.game.ranked), elo: result.game.elo || null,
     });
   }
 }
@@ -56,9 +58,17 @@ function sendTimeout(response, result) {
   return true;
 }
 
+/** A 503 from the engine is invisible to the player's terminal otherwise: say what failed and why. */
+function logEngineError(request, error) {
+  if (error?.status !== 503 || !String(error.code).startsWith("ENGINE_")) return;
+  const detail = error.code === "ENGINE_UNAVAILABLE" ? stockfish.availabilityReport().reason : error.message;
+  console.error(`[stockfish] ${request.method} ${request.originalUrl} -> 503 ${error.code}: ${detail}`);
+}
+
 const asyncHandler = (handler) => async (request, response, next) => {
   try { await handler(request, response, next); }
   catch (error) {
+    logEngineError(request, error);
     try { sendError(response, error); }
     catch (unexpected) { next(unexpected); }
   }
@@ -67,12 +77,22 @@ const asyncHandler = (handler) => async (request, response, next) => {
 const createGame = asyncHandler(async (request, response) => {
   const receivedAt = new Date();
   const result = await gameService.createRoom(request.user.id, request.body, receivedAt);
+  respondMatchmaking(request, response, result);
+});
+
+/** Shared answer of the PvP queue endpoints: 201 bot game, 200 matched, 202 searching. */
+function respondMatchmaking(request, response, result) {
   broadcastGameStarted(request, result);
   response.status(result.bot ? 201 : result.matched ? 200 : 202).json({
     status: "success",
     ...(result.bot ? {} : { matchmaking: { status: result.matched ? "matched" : "searching" } }),
     game: result.game,
   });
+}
+
+const joinMatchmaking = asyncHandler(async (request, response) => {
+  const result = await gameService.joinMatchmaking(request.user.id, request.body, new Date());
+  respondMatchmaking(request, response, result);
 });
 
 const listLive = asyncHandler(async (_request, response) => {
@@ -111,6 +131,7 @@ const makeMove = asyncHandler(async (request, response) => {
     })) || [],
     clocks: result.game.clocks, game_status: result.game.status, result: result.game.result,
     termination_reason: result.game.termination_reason,
+    ranked: Boolean(result.game.ranked), elo: result.game.elo || null,
   });
   if (botReservation) {
     void gameService.playBotMove(request.params.id, botReservation)
@@ -129,6 +150,11 @@ const getGame = asyncHandler(async (request, response) => {
 
 const analyzeGame = asyncHandler(async (request, response) => {
   const result = await gameAnalysisService.analyzeGame(request.user.id, request.params.id);
+  response.json({ status: "success", ...result });
+});
+
+const analyzePgn = asyncHandler(async (request, response) => {
+  const result = await gameAnalysisService.analyzePgn(request.body?.pgn);
   response.json({ status: "success", ...result });
 });
 
@@ -165,4 +191,4 @@ const claimDraw = asyncHandler(async (request, response) => {
   });
 });
 
-module.exports = { createGame, cancelMatchmaking, listLive, listHistory, makeMove, getGame, analyzeGame, resign, offerDraw, respondDraw, claimDraw };
+module.exports = { createGame, joinMatchmaking, cancelMatchmaking, listLive, listHistory, makeMove, getGame, analyzeGame, analyzePgn, resign, offerDraw, respondDraw, claimDraw };

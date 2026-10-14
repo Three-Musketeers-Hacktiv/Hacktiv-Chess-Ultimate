@@ -17,7 +17,7 @@ const getHome = async (request, response, next) => {
           (white_player_id = :userId OR black_player_id = :userId)`,
         { replacements: { userId: request.user.id }, type: QueryTypes.SELECT },
       ),
-      User.findByPk(request.user.id, { attributes: ["id", "username"] }),
+      User.findByPk(request.user.id, { attributes: ["id", "username", "elo_rating"] }),
     ]);
 
     if (!user) {
@@ -31,14 +31,25 @@ const getHome = async (request, response, next) => {
       home: {
         user,
         stats: statsRows[0],
+        // Machine-readable capability flags, `available | planned`.
+        capabilities: {
+          ranked: "available",
+          rematch: "available",
+          analysis: stockfishAvailable ? "available" : "planned",
+          puzzles: "available",
+        },
         game_modes: [
           { id: "pvp", label: "PvP", status: "available" },
+          { id: "ranked", label: "Ranked", status: "available" },
           { id: "bot", label: "Melawan Bot", status: stockfishAvailable ? "available" : "planned" },
         ],
         features: [
           { id: "profile", label: "Profil dan Statistik", status: "available" },
           { id: "history", label: "Riwayat Permainan", status: "available" },
+          { id: "ranked", label: "Matchmaking Ranked (Elo)", status: "available" },
+          { id: "rematch", label: "Rematch", status: "available" },
           { id: "analysis", label: "Analisis Permainan", status: stockfishAvailable ? "available" : "planned" },
+          { id: "puzzles", label: "Tactical Puzzles", status: "available" },
           { id: "daily_puzzle", label: "Puzzle Harian", status: "planned" },
           { id: "tournaments", label: "Turnamen", status: "planned" },
         ],
