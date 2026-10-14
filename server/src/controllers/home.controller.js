@@ -1,5 +1,6 @@
 const { QueryTypes } = require("sequelize");
 const { sequelize, User } = require("../models");
+const stockfish = require("../services/stockfish.service");
 
 const getHome = async (request, response, next) => {
   try {
@@ -30,7 +31,7 @@ const getHome = async (request, response, next) => {
         stats: statsRows[0],
         game_modes: [
           { id: "pvp", label: "PvP", status: "available" },
-          { id: "bot", label: "Melawan Bot", status: "planned" },
+          { id: "bot", label: "Melawan Bot", status: stockfish.isAvailable() ? "available" : "planned" },
         ],
         features: [
           { id: "history", label: "Riwayat Permainan", status: "planned" },

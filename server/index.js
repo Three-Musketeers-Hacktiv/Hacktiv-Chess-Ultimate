@@ -6,7 +6,10 @@ const app = require("./src/app");
 const { sequelize } = require("./src/models");
 const authenticateSocket = require("./src/socket/auth");
 const registerGameSocket = require("./src/socket/game.socket");
-const { expireGame, findActiveGameIds } = require("./src/services/game.service");
+const stockfish = require("./src/services/stockfish.service");
+const {
+  expireGame, findActiveGameIds, findPendingBotGames, playBotMove, failPendingBotTurn,
+} = require("./src/services/game.service");
 
 const port = Number(process.env.PORT || 3000);
 const allowedOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173")
@@ -53,6 +56,18 @@ async function startServer() {
     }
   };
   await checkTimeouts();
+  const pendingBotGames = await findPendingBotGames();
+  for (const game of pendingBotGames) {
+    try {
+      const reservation = stockfish.reserveBotMove();
+      void playBotMove(game.id, reservation).catch((error) => {
+        console.error(`Unable to resume bot game ${game.id}: ${error.message}`);
+      });
+    } catch (error) {
+      console.error(`Unable to resume bot game ${game.id}: ${error.message}`);
+      await failPendingBotTurn(game.id);
+    }
+  }
   timeoutInterval = setInterval(checkTimeouts, 1000);
   timeoutInterval.unref();
 
