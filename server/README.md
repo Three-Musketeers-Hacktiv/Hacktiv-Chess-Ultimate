@@ -1,6 +1,6 @@
 # Hacktiv Chess Backend
 
-Backend MVP catur online dengan Node.js/Express, PostgreSQL/Sequelize, Socket.IO, `chess.js` v1.4.0, dan Stockfish untuk game bot. Alur PvP serta bot tersedia; analisis Stockfish dan riwayat lintas game masih tahap berikutnya.
+Backend MVP catur online dengan Node.js/Express, PostgreSQL/Sequelize, Socket.IO, `chess.js` v1.4.0, dan Stockfish untuk game bot serta analisis pascapertandingan. Alur PvP, bot, riwayat, dan analisis game selesai tersedia jika Stockfish dapat diakses.
 
 ## Menjalankan fondasi server
 
@@ -29,7 +29,7 @@ MVP belum memiliki logout yang mencabut token, refresh token, verifikasi email, 
 
 1. Pengguna membuat akun melalui `POST /api/auth/register`.
 2. Pengguna login melalui `POST /api/auth/login` dan menerima JWT.
-3. Klien memanggil `GET /` dengan JWT untuk menampilkan home. Status mode bot `available` jika binary pada `STOCKFISH_PATH` dapat diakses; jika tidak, statusnya `planned`.
+3. Klien memanggil `GET /` dengan JWT untuk menampilkan home. Status riwayat `available`; status mode bot dan analisis `available` jika file pada `STOCKFISH_PATH` dapat diakses, dan `planned` jika tidak.
 4. Pemain memilih preset waktu dan meminta random matchmaking melalui `POST /api/games`. Backend memasangkan pemain dengan antrean yang memakai preset sama; jika belum ada lawan, pemain menunggu dan dapat membatalkan antrean.
 5. Setelah match, kedua pemain menerima `game_started` lewat Socket.IO; klien yang reconnect dapat memeriksa `GET /api/games/:id`. Pemain lain hanya dapat menonton game aktif melalui `GET /api/games/live` dan Socket.IO `watch_game`.
 6. Langkah legal disimpan beserta FEN dan notasi. Perubahan disiarkan lewat Socket.IO setelah transaksi berhasil. Jam berjalan di server; scheduler memeriksa timeout setiap detik dan aktif kembali setelah server restart.
@@ -38,13 +38,15 @@ MVP belum memiliki logout yang mencabut token, refresh token, verifikasi email, 
 ## Implementasi saat ini: PvP dan bot
 
 - Registrasi dan login dengan autentikasi JWT.
-- Register/login JWT dan home terautentikasi; PvP tersedia, status bot mengikuti ketersediaan binary Stockfish.
+- Register/login JWT dan home terautentikasi; PvP tersedia, status bot mengikuti ketersediaan file Stockfish pada `STOCKFISH_PATH`.
 - Random matchmaking PvP berdasarkan preset Bullet 1+0, Blitz 3+2, Rapid 15+10, atau Professional 60+30; jam dimulai setelah lawan ditemukan.
 - Membatalkan antrean sendiri; satu pemain hanya dapat memiliki satu game PvP aktif (menunggu atau sedang berlangsung). Retry mengembalikan antrean/game yang sama, dan pemain dapat mencari lagi setelah game selesai.
 - Menonton game PvP yang sedang berlangsung. Join by room atau tantangan teman belum termasuk MVP.
 - Validasi langkah dengan `chess.js`; menyimpan history/FEN, membentuk PGN, dan mengurutkan aksi per game pada satu proses.
 - Menampilkan riwayat lintas game milik pengguna dengan cursor pagination, detail dan langkah game, daftar PvP aktif, serta snapshot baca-saja untuk penonton.
 - Game melawan Stockfish dengan tingkat easy/medium/hard, empat preset waktu, validasi langkah engine, dan penyimpanan langkah bot.
+- Analisis pascapertandingan per langkah melalui `POST /api/games/:id/analysis`; hanya pemain game selesai yang dapat meminta analisis. Posisi dibentuk dari history database, dengan batas 60 ply.
+- Pencarian analisis dan langkah bot berbagi kapasitas Stockfish: maksimal dua proses aktif dan lima pekerjaan menunggu. Analisis memakai satu thread per proses, pencarian 75 ms per posisi, batas proses 15 detik, dan batas antrean 10 detik.
 - Stockfish dijalankan melalui UCI dari `STOCKFISH_PATH`; maksimal dua proses aktif dan lima pekerjaan antrean, masing-masing proses memakai satu thread. Game bot aktif yang menunggu giliran Stockfish dijadwalkan kembali setelah server restart. Jika antrean penuh, game tetap aktif dan dicoba ulang; kegagalan engine yang nyata diselesaikan sebagai remis.
 - Menyiarkan `game_started` ke kedua pemain saat match ditemukan, lalu `game_state`, `move`, dan `game_over` melalui Socket.IO.
 - Jam server dengan increment; timeout diperiksa saat aksi masuk dan oleh scheduler setiap detik, termasuk setelah server restart.
@@ -54,7 +56,6 @@ MVP belum memiliki logout yang mencabut token, refresh token, verifikasi email, 
 
 ## Belum diimplementasikan
 
-- Analisis PGN menggunakan Stockfish.
 - Profil/statistik terpisah, rating, pembukaan favorit, dan grafik perkembangan.
 - Puzzle, turnamen, teman/chat/klub, gamifikasi, dan antarmuka frontend.
 - Antrean game dan rate limit berbasis memori hanya sesuai satu instance; deployment beberapa instance perlu store dan pengurutan bersama.
@@ -64,7 +65,7 @@ Puzzle harian dan fitur lain dapat ditambahkan setelah sumber kontennya disepaka
 ## Istilah posisi dan riwayat
 
 - **FEN** (*Forsyth–Edwards Notation*) menggambarkan posisi papan pada satu saat, termasuk giliran yang harus jalan. Backend memakai FEN untuk posisi game terkini dan posisi setelah setiap langkah.
-- **PGN** (*Portable Game Notation*) merekam urutan langkah, misalnya `1. e4 e5 2. Nf3 Nc6`. Backend membentuk PGN dari history; analisis Stockfish belum tersedia.
+- **PGN** (*Portable Game Notation*) merekam urutan langkah, misalnya `1. e4 e5 2. Nf3 Nc6`. Backend membentuk PGN dari history dan menganalisis posisi game selesai menggunakan Stockfish.
 - Singkatnya, FEN adalah snapshot posisi; PGN adalah rekaman langkah. History terstruktur disimpan di `game_moves`.
 
 ## Skema database

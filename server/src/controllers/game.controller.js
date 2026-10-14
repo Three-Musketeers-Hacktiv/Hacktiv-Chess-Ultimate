@@ -1,4 +1,5 @@
 const gameService = require("../services/game.service");
+const gameAnalysisService = require("../services/game-analysis.service");
 
 function sendError(response, error) {
   if (error instanceof gameService.GameError) {
@@ -126,6 +127,11 @@ const getGame = asyncHandler(async (request, response) => {
   response.json({ status: "success", game: { ...result.game, white: result.white, black: result.black, pgn: result.pgn, history: result.history } });
 });
 
+const analyzeGame = asyncHandler(async (request, response) => {
+  const result = await gameAnalysisService.analyzeGame(request.user.id, request.params.id);
+  response.json({ status: "success", ...result });
+});
+
 const resign = asyncHandler(async (request, response) => {
   const result = await gameService.resign(request.user.id, request.params.id, new Date());
   broadcast(request, result);
@@ -159,4 +165,4 @@ const claimDraw = asyncHandler(async (request, response) => {
   });
 });
 
-module.exports = { createGame, cancelMatchmaking, listLive, listHistory, makeMove, getGame, resign, offerDraw, respondDraw, claimDraw };
+module.exports = { createGame, cancelMatchmaking, listLive, listHistory, makeMove, getGame, analyzeGame, resign, offerDraw, respondDraw, claimDraw };

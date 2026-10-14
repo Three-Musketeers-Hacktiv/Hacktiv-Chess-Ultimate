@@ -4,7 +4,7 @@ Dokumen ini mendefinisikan kontrak backend MVP berbasis Node.js dan Express. HTT
 
 ## Status implementasi
 
-Autentikasi, home, alur PvP, game bot, dan daftar riwayat game pribadi yang didaftar di bawah tersedia. Mode bot memerlukan binary Stockfish yang dapat dijalankan melalui `STOCKFISH_PATH`. Join by room belum termasuk MVP. Profil terpisah dan analisis Stockfish masih rancangan.
+Autentikasi, home, alur PvP, game bot, endpoint riwayat pribadi, dan analisis game selesai tersedia. Mode bot dan analisis memerlukan file Stockfish pada `STOCKFISH_PATH` yang dapat diakses server. Join by room dan profil terpisah belum termasuk MVP.
 
 ## Konvensi
 
@@ -112,7 +112,7 @@ Login tidak membuat game dan tidak menerima pilihan mode; pilihan mode dikirim s
 
 1. Pengguna login melalui `POST /api/auth/login`.
 2. Setelah menerima token, klien memanggil `GET /` dengan token untuk menampilkan beranda dan pilihan fitur.
-3. Dari beranda, pengguna memilih **PvP**. Mode **Melawan Bot** direncanakan untuk tahap berikutnya.
+3. Dari beranda, pengguna memilih **PvP** atau **Melawan Bot** jika status mode bot `available`. Status Bot dan analisis menjadi `planned` jika file pada `STOCKFISH_PATH` tidak dapat diakses.
 4. Pengguna memilih kontrol waktu dan memanggil `POST /api/games` untuk random matchmaking. Backend memasangkan pemain dengan preset yang sama atau membuat antrean berstatus menunggu; pemain dapat membatalkan antrean.
 5. Setelah match, kedua pemain menerima event Socket.IO `game_started`, lalu subscribe ke game melalui `watch_game`. Pengguna lain dapat melihat daftar game PvP aktif dan menontonnya tanpa hak mengirim langkah.
 
@@ -132,7 +132,7 @@ Response `200`:
 
 `GET /` (**Auth**)
 
-Dipanggil setelah login. Endpoint ini menyediakan ringkasan pemain, pilihan mode permainan, dan katalog fitur untuk layar home frontend. Fitur yang belum tersedia tetap dapat ditampilkan dengan status `planned`.
+Dipanggil setelah login. Endpoint ini menyediakan ringkasan pemain, pilihan mode permainan, dan katalog fitur untuk layar home frontend. Status mode bot dan analisis `available` mengikuti aksesibilitas file pada `STOCKFISH_PATH`; jika tidak dapat diakses, status keduanya `planned`. Fitur yang belum tersedia tetap dapat ditampilkan dengan status `planned`.
 
 Response `200`:
 
@@ -147,8 +147,8 @@ Response `200`:
       { "id": "bot", "label": "Melawan Bot", "status": "available" }
     ],
     "features": [
-      { "id": "history", "label": "Riwayat Permainan", "status": "planned" },
-      { "id": "analysis", "label": "Analisis Permainan", "status": "planned" },
+      { "id": "history", "label": "Riwayat Permainan", "status": "available" },
+      { "id": "analysis", "label": "Analisis Permainan", "status": "available" },
       { "id": "daily_puzzle", "label": "Puzzle Harian", "status": "planned" },
       { "id": "tournaments", "label": "Turnamen", "status": "planned" }
     ]
@@ -401,32 +401,39 @@ Hanya pemain game yang dapat melihat detail. Response memuat FEN terakhir, PGN, 
 
 ### Profil dan statistik
 
-`GET /api/profile/me` (**Auth**, belum tersedia)
+`GET /api/profile/me` (**Auth**, belum tersedia; rancangan)
 
 Response memuat ID, username, statistik menang/seri/kalah, dan hingga 50 game selesai beserta PGN.
 
 ### Analisis pascapertandingan
 
-`POST /api/game/analyze` (**Auth**, belum tersedia)
+`POST /api/games/:id/analysis` (**Auth**)
 
-Body:
+Menganalisis game selesai yang melibatkan pengguna. Body tidak diperlukan: server membaca `game_moves` dari database dan menyusun posisi dari awal. PGN bebas dari klien tidak diterima.
 
-```json
-{ "pgn": "1. e4 e5 2. Nf3 Nc6" }
-```
+Batas MVP:
 
-PGN dibatasi hingga 10 KB dan 60 half-move. Stockfish mengevaluasi langkah dan mengembalikan label serta alternatif terbaik. Analisis dibatasi 5000 ms; layanan menjalankan maksimal dua proses aktif dan menampung maksimal lima pekerjaan yang menunggu. Permintaan analisis yang antreannya penuh ditolak dengan `503 ENGINE_BUSY`.
+- Maksimal 60 ply per game; game yang lebih panjang menghasilkan `422 ANALYSIS_GAME_TOO_LONG`.
+- Maksimal dua proses Stockfish aktif dan lima pekerjaan menunggu, dibagi dengan langkah bot. Tiap proses memakai satu thread dan pencarian 75 ms per posisi.
+- Proses analisis dihentikan setelah 15 detik; pekerjaan yang menunggu lebih dari 10 detik ditolak dengan `503 ENGINE_BUSY`.
+- Hasil analisis tidak disimpan; request berikutnya menjalankan analisis lagi.
 
 Response `200`:
 
 ```json
 {
   "status": "success",
+  "game_id": "<uuid>",
+  "result": "1-0",
+  "termination_reason": "checkmate",
+  "analyzed_plies": 2,
   "analysis": [
     {
-      "move_number": 1,
+      "ply": 1,
+      "color": "w",
       "move": "e4",
-      "evaluation": "0.3",
+      "evaluation": { "cp": 30, "mate": null },
+      "centipawn_loss": 0,
       "label": "Best Move",
       "best_alternative": null
     }
@@ -434,7 +441,9 @@ Response `200`:
 }
 ```
 
-Label MVP: `Best Move`, `Mistake`, atau `Blunder`. Jika Stockfish tidak tersedia, server mengembalikan error server.
+Evaluasi diberikan dari sudut pandang putih: centipawn positif menguntungkan putih; `mate` positif berarti putih dapat memaksa skakmat, dan negatif berarti hitam. `centipawn_loss` bernilai `null` jika evaluasi posisi berupa skakmat. `best_alternative` adalah notasi SAN langkah terbaik Stockfish sebelum langkah dimainkan, atau `null` jika langkah pemain sama dengan pilihan engine. Label MVP: `Best Move` untuk kehilangan di bawah 100 centipawn, `Mistake` mulai 100, dan `Blunder` mulai 300.
+
+Error: `401` tanpa JWT, `403 GAME_FORBIDDEN` jika pengguna bukan pemain, `404 GAME_NOT_FOUND`, `409 GAME_NOT_COMPLETED`, `422 ANALYSIS_GAME_TOO_LONG`, `503 ENGINE_UNAVAILABLE` jika binary tidak dapat diakses, `503 ENGINE_BUSY` jika kapasitas antrean penuh atau waktu antre habis, dan `503 ENGINE_ANALYSIS_FAILED` jika engine gagal atau mengembalikan hasil tidak valid. Game tanpa langkah menghasilkan daftar analisis kosong.
 
 ## Socket.IO
 
