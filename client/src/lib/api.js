@@ -70,6 +70,28 @@ export const authApi = {
     request('/api/auth/login', { method: 'POST', body: { email, password }, signal, auth: false }),
 }
 
+/** PvP rooms: REST creates/joins/moves, Socket.IO (`watch_game`) streams the results back. */
+export const gamesApi = {
+  create: (timeControl, signal) =>
+    request('/api/games', { method: 'POST', body: { mode: 'pvp', time_control: timeControl }, signal }),
+  listOpen: (signal) => request('/api/games/open', { signal }),
+  join: (gameId, signal) => request(`/api/games/${gameId}/join`, { method: 'POST', signal }),
+  move: (gameId, move, signal) => request(`/api/games/${gameId}/moves`, { method: 'POST', body: move, signal }),
+  resign: (gameId, signal) => request(`/api/games/${gameId}/resign`, { method: 'POST', signal }),
+  listLive: (signal) => request('/api/games/live', { signal }),
+  offerDraw: (gameId, signal) => request(`/api/games/${gameId}/draw-offers`, { method: 'POST', signal }),
+  respondDraw: (gameId, decision, signal) =>
+    request(`/api/games/${gameId}/draw-offers/response`, { method: 'POST', body: { decision }, signal }),
+  claimDraw: (gameId, reason, signal) =>
+    request(`/api/games/${gameId}/draw-claims`, { method: 'POST', body: { reason }, signal }),
+}
+
+/** `GET /` — player stats + the server's own catalogue of modes/features and their availability. */
+export const homeApi = {
+  get: (signal) => request('/', { signal }),
+}
+
+/** Not implemented by the server yet (`planned` in the home catalogue) — guarded by capabilities. */
 export const gameApi = {
   analyze: (pgn, signal) => request('/api/game/analyze', { method: 'POST', body: { pgn }, signal }),
 }

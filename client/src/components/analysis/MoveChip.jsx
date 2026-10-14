@@ -41,7 +41,7 @@ export const MoveChip = memo(function MoveChip({ item, index, active, onSelect }
           >
             {tone.text}
           </span>
-          <EvalMeter value={item.evaluation} />
+          {item.evaluation != null && <EvalMeter value={item.evaluation} />}
         </div>
 
         {item.bestAlternative && (

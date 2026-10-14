@@ -1,8 +1,11 @@
 import { memo } from 'react'
 import { cn } from '../../lib/cn'
+import { ClockDisplay } from './ClockDisplay'
 
 /** Compact player strip above/below the board. Emerald glow marks whose turn it is. */
-export const PlayerCard = memo(function PlayerCard({ name, rating, color, active, isYou }) {
+export const PlayerCard = memo(function PlayerCard({ name, rating, color, active, isYou, clocks }) {
+  const label = name ?? 'Waiting…'
+
   return (
     <div
       className={cn(
@@ -22,12 +25,12 @@ export const PlayerCard = memo(function PlayerCard({ name, rating, color, active
         )}
         aria-hidden="true"
       >
-        {name?.[0] ?? '?'}
+        {label[0] ?? '?'}
       </span>
 
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-2 truncate text-sm font-semibold text-slate-100">
-          {name}
+        <p className={cn('flex items-center gap-2 truncate text-sm font-semibold', name ? 'text-slate-100' : 'text-slate-500')}>
+          {label}
           {isYou && (
             <span className="rounded-md border border-violet-400/30 bg-violet-500/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-violet-300">
               You
@@ -37,9 +40,9 @@ export const PlayerCard = memo(function PlayerCard({ name, rating, color, active
         <p className="font-mono text-xs text-slate-500">{color === 'w' ? 'White' : 'Black'}</p>
       </div>
 
-      {rating != null && (
-        <span className="font-mono text-sm tabular-nums text-slate-400">{rating}</span>
-      )}
+      {rating != null && <span className="font-mono text-sm tabular-nums text-slate-400">{rating}</span>}
+
+      <ClockDisplay clocks={clocks} color={color} />
 
       <span
         className={cn(

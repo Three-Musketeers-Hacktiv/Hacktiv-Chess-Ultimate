@@ -32,9 +32,9 @@ export default defineConfig([
     },
   },
 
-  // Node scripts (mock server, config files)
+  // Node-side config files
   {
-    files: ['mock-server/**/*.{js,mjs}', '*.config.js'],
+    files: ['*.config.js'],
     extends: [js.configs.recommended],
     languageOptions: {
       ecmaVersion: 'latest',

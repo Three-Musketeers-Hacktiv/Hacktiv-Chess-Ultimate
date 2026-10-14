@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { io } from 'socket.io-client'
 import { useAuth } from '../hooks/useAuth'
 import { API_URL } from '../lib/config'
@@ -49,18 +49,7 @@ export function SocketProvider({ children }) {
   const socket = token ? connection : null
   const status = token ? transportStatus : 'idle'
 
-  /**
-   * Drop and re-open the transport on the *same* instance. The contract has no
-   * "leave queue" event, so this is how we cancel matchmaking / abandon a match
-   * server-side without losing the single-instance guarantee.
-   */
-  const resetConnection = useCallback(() => {
-    if (!socket) return
-    socket.disconnect()
-    socket.connect()
-  }, [socket])
-
-  const value = useMemo(() => ({ socket, status, resetConnection }), [socket, status, resetConnection])
+  const value = useMemo(() => ({ socket, status }), [socket, status])
 
   return <SocketContext.Provider value={value}>{children}</SocketContext.Provider>
 }

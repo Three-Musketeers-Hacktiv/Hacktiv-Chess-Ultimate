@@ -114,6 +114,23 @@ export function buildReviewItems(analysis, plies) {
   })
 }
 
+/** Plain replay rows (no engine labels) — used while Stockfish analysis is not available on the server. */
+export function buildReplayItems(plies) {
+  return plies.map((ply) => ({
+    key: `ply-${ply.ply}`,
+    moveNumber: Math.ceil(ply.ply / 2),
+    san: ply.san,
+    color: ply.color,
+    evaluation: null,
+    label: null,
+    tone: LABEL_TONES.neutral,
+    bestAlternative: null,
+    alternativeMove: null,
+    fenBefore: ply.fenBefore,
+    playedMove: { from: ply.from, to: ply.to },
+  }))
+}
+
 export function summarize(items) {
   return items.reduce(
     (acc, item) => {

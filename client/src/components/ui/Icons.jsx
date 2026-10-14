@@ -53,3 +53,16 @@ export const FlagIcon = (props) => (
     <path d="M5 21V4m0 0h11l-2 4 2 4H5" />
   </svg>
 )
+
+export const SearchIcon = (props) => (
+  <svg {...base} {...props}>
+    <circle cx="11" cy="11" r="6.5" />
+    <path d="m20 20-4.2-4.2" />
+  </svg>
+)
+
+export const SwordsIcon = (props) => (
+  <svg {...base} {...props}>
+    <path d="m5 4 9 9M4 5l1.5 3.5L9 10M19 4l-9 9m10-8-1.5 3.5L15 10M8 16l-3 3m11-3 3 3M3.5 20.5 7 17m10 0 3.5 3.5" />
+  </svg>
+)

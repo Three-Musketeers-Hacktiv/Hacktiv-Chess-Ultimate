@@ -8,8 +8,9 @@ import { Button } from '../components/ui/Button'
 import { Card, Eyebrow } from '../components/ui/Card'
 import { Spinner } from '../components/ui/Spinner'
 import { useGameAnalysis } from '../hooks/useGameAnalysis'
-import { buildReviewItems, summarize } from '../lib/analysis'
-import { replayPgn, resolveVerdict } from '../lib/chess'
+import { useHome } from '../hooks/useHome'
+import { buildReplayItems, buildReviewItems, summarize } from '../lib/analysis'
+import { describeOutcome, replayPgn, resolveVerdict } from '../lib/chess'
 import { lastGame } from '../lib/storage'
 import { cn } from '../lib/cn'
 
@@ -60,11 +61,16 @@ export default function AnalysisPage() {
   const pgn = state?.pgn || stored?.pgn || ''
   const meta = stored && (!pgn || stored.pgn === pgn || !state?.pgn) ? stored : null
 
-  const { status, analysis, error, retry } = useGameAnalysis(pgn)
+  const { capabilities } = useHome()
+  const { status, analysis, error, retry } = useGameAnalysis(pgn, capabilities.analysis)
   const [selectedIndex, setSelectedIndex] = useState(0)
 
   const plies = useMemo(() => replayPgn(pgn), [pgn])
-  const items = useMemo(() => buildReviewItems(analysis, plies), [analysis, plies])
+  const comingSoon = status === 'unavailable'
+  const items = useMemo(
+    () => (comingSoon ? buildReplayItems(plies) : buildReviewItems(analysis, plies)),
+    [comingSoon, analysis, plies],
+  )
   const counts = useMemo(() => summarize(items), [items])
 
   const lastIndex = items.length - 1
@@ -100,7 +106,7 @@ export default function AnalysisPage() {
               'Match review'
             )}
           </h1>
-          {meta?.outcome?.message && <p className="text-sm text-slate-400">{meta.outcome.message}</p>}
+          {meta?.outcome && <p className="text-sm text-slate-400">{describeOutcome(meta.outcome).message}</p>}
         </div>
         <div className="flex items-center gap-3">
           {verdict && (
@@ -145,11 +151,24 @@ export default function AnalysisPage() {
             </div>
           )}
 
-          {status === 'success' && (
+          {comingSoon && (
+            <div className="animate-pop rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-4 shadow-glow">
+              <p className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-violet-200">
+                Stockfish analysis · Coming Soon
+              </p>
+              <p className="mt-2 text-sm text-slate-300">
+                Feature under development by the Backend Team. Move classifications and better-move suggestions will
+                appear here once the server exposes <code className="font-mono text-violet-200">/api/game/analyze</code>.
+                Meanwhile you can replay the game move by move.
+              </p>
+            </div>
+          )}
+
+          {(status === 'success' || comingSoon) && (
             <>
               {items.length > 0 ? (
                 <>
-                  <AnalysisSummary counts={counts} total={items.length} />
+                  {!comingSoon && <AnalysisSummary counts={counts} total={items.length} />}
                   <ol className="relative -mr-2 max-h-[calc(100dvh-26rem)] min-h-72 space-y-2 overflow-y-auto pr-2">
                     {items.map((item, index) => (
                       <MoveChip

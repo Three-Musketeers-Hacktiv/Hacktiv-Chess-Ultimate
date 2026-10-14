@@ -58,11 +58,34 @@ export function replayPgn(pgn) {
   }
 }
 
+const same = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase()
+
 /** Result from the local player's point of view: 'win' | 'loss' | 'draw'. */
 export function resolveVerdict(outcome, me) {
-  const status = String(outcome?.status ?? '').toLowerCase()
-  if (!outcome?.winner || status === 'draw' || status === 'stalemate') return 'draw'
-  return outcome.winner === me ? 'win' : 'loss'
+  if (!outcome?.winner || outcome.result === '1/2-1/2') return 'draw'
+  return same(outcome.winner, me) ? 'win' : 'loss'
+}
+
+const REASONS = Object.freeze({
+  checkmate: 'Checkmate',
+  stalemate: 'Stalemate',
+  dead_position: 'Dead position',
+  resignation: 'Resignation',
+  timeout: 'Timeout',
+  draw_agreement: 'Draw agreed',
+  threefold_repetition: 'Threefold repetition',
+  fivefold_repetition: 'Fivefold repetition',
+  fifty_move_rule: 'Fifty-move rule',
+  seventy_five_move_rule: 'Seventy-five-move rule',
+})
+
+/** Human text for a `game_over` payload (`termination_reason`, `winner`). */
+export function describeOutcome(outcome) {
+  const reason = REASONS[outcome?.termination_reason] ?? outcome?.status ?? 'Game over'
+  const message =
+    outcome?.message ??
+    (outcome?.winner ? `${outcome.winner} wins by ${reason.toLowerCase()}.` : `Drawn — ${reason.toLowerCase()}.`)
+  return { reason, message }
 }
 
 /** Resolves a SAN suggestion (e.g. `Nf6`) to board squares in the given position. */

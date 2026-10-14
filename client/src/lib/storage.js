@@ -33,6 +33,19 @@ export const session = {
   },
 }
 
+/** Time controls the server ignored when a room was created (shown as "Coming Soon"). */
+export const unsupportedTimes = {
+  get: () => {
+    const value = read(localStorage, STORAGE_KEYS.unsupportedTimes)
+    return Array.isArray(value) ? value : []
+  },
+  add(id) {
+    const next = [...new Set([...unsupportedTimes.get(), id])]
+    write(localStorage, STORAGE_KEYS.unsupportedTimes, next)
+    return next
+  },
+}
+
 /** The last finished match, kept per tab so the analysis page survives a refresh. */
 export const lastGame = {
   get: () => read(sessionStorage, STORAGE_KEYS.lastGame),
