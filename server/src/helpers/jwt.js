@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const { createHash } = require("node:crypto");
 
 const getSecretKey = () => {
   const secretKey = process.env.JWT_SECRET;
@@ -18,4 +19,6 @@ const signToken = (payload) =>
 const verifyToken = (token) =>
   jwt.verify(token, getSecretKey(), { algorithms: ["HS256"] });
 
-module.exports = { signToken, verifyToken };
+const hashToken = (token) => createHash("sha256").update(token).digest("hex");
+
+module.exports = { signToken, verifyToken, hashToken };

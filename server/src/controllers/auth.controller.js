@@ -1,7 +1,7 @@
-const { UniqueConstraintError, ValidationError } = require("sequelize");
+const { Op, UniqueConstraintError, ValidationError } = require("sequelize");
 const { compare } = require("../helpers/bcrypt");
 const { signToken } = require("../helpers/jwt");
-const { User } = require("../models");
+const { RevokedToken, User } = require("../models");
 
 const register = async (request, response, next) => {
   const { username, email, password } = request.body || {};
@@ -85,4 +85,21 @@ const login = async (request, response, next) => {
   }
 };
 
-module.exports = { register, login };
+const logout = async (request, response, next) => {
+  try {
+    await RevokedToken.destroy({ where: { expires_at: { [Op.lte]: new Date() } } });
+    await RevokedToken.create({
+      token_hash: request.auth.tokenHash,
+      expires_at: request.auth.expiresAt,
+    });
+    request.app.get("io")?.in?.(`token:${request.auth.tokenHash}`).disconnectSockets(true);
+    return response.status(200).json({ status: "success", message: "Logout berhasil." });
+  } catch (error) {
+    if (error.name === "SequelizeUniqueConstraintError") {
+      return response.status(200).json({ status: "success", message: "Logout berhasil." });
+    }
+    return next(error);
+  }
+};
+
+module.exports = { register, login, logout };
