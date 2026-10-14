@@ -8,8 +8,8 @@
 
 /** Verified absent in `server/` at the time of the audit: no socket listener / route exists. */
 export const STATIC_CAPABILITIES = Object.freeze({
-  rematch: false, // no `request_rematch` listener
-  serverMatchmakingQueue: false, // no `join_room` queue — pairing is done client-side over open rooms
+  rematch: false, // the socket only listens to `watch_game`; no `request_rematch` listener
+  serverMatchmakingQueue: true, // `POST /api/games` queues/pairs; `DELETE /:id/matchmaking` cancels
 })
 
 /** Fallback shown until `GET /` answers (or if it fails): everything the server calls planned stays "soon". */
@@ -22,8 +22,8 @@ export function resolveCapabilities(home) {
   return {
     ...STATIC_CAPABILITIES,
     bot: mode('bot') === 'available',
-    // Analysis is attempted unless the server explicitly says it is still planned.
-    analysis: home ? feature('analysis') !== PLANNED : true,
+    // `POST /api/game/analyze` has no route in `server/` yet: stay locked until the catalogue says `available`.
+    analysis: feature('analysis') === 'available',
     history: feature('history') === 'available',
     dailyPuzzle: feature('daily_puzzle') === 'available',
     tournaments: feature('tournaments') === 'available',

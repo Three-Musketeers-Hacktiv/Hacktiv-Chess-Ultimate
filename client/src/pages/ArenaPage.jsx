@@ -114,6 +114,11 @@ function ArenaSession({ roomId }) {
   const [resigning, setResigning] = useState(false)
   const [offering, setOffering] = useState(false)
 
+  // The server only accepts an offer on your own turn, once both sides have moved.
+  let drawHint
+  if (game.moves.length < 2) drawHint = 'Available once both players have moved'
+  else if (!game.isMyTurn) drawHint = 'You can offer a draw on your own turn'
+
   const { offerDraw } = game
   const sendDrawOffer = useCallback(async () => {
     setOffering(true)
@@ -199,7 +204,7 @@ function ArenaSession({ roomId }) {
         )}
 
         <Card className="space-y-4 p-5">
-          <Eyebrow>{info.status === 'waiting' ? 'Room open' : 'Live match'}</Eyebrow>
+          <Eyebrow>Live match</Eyebrow>
           <StatusPill
             outcome={outcome}
             status={info.status}
@@ -207,11 +212,6 @@ function ArenaSession({ roomId }) {
             isCheck={game.isCheck}
             spectating={spectating}
           />
-          {info.status === 'waiting' && (
-            <p className="text-sm text-slate-400">
-              Your room is listed in the lobby. The game starts automatically as soon as a rival joins.
-            </p>
-          )}
           <div className="grid grid-cols-2 gap-3 font-mono text-xs">
             <div className="rounded-lg border border-slate-800/60 bg-slate-950/40 px-3 py-2">
               <p className="uppercase tracking-widest text-slate-600">Time</p>
@@ -256,8 +256,8 @@ function ArenaSession({ roomId }) {
                 variant="secondary"
                 className="flex-1"
                 loading={offering}
-                disabled={offering || Boolean(game.drawOffer) || game.moves.length < 2}
-                title={game.moves.length < 2 ? 'Available once both players have moved' : undefined}
+                disabled={offering || Boolean(game.drawOffer) || game.moves.length < 2 || !game.isMyTurn}
+                title={drawHint}
                 onClick={sendDrawOffer}
               >
                 <span aria-hidden="true" className="font-mono text-base leading-none">

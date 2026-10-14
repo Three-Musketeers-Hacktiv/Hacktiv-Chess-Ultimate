@@ -5,7 +5,6 @@ import { Button } from '../components/ui/Button'
 import { Card, Eyebrow } from '../components/ui/Card'
 import { ArrowRightIcon, ChartIcon, CpuIcon, SearchIcon, UsersIcon } from '../components/ui/Icons'
 import { Spinner } from '../components/ui/Spinner'
-import { Toast } from '../components/ui/Toast'
 import { useAuth } from '../hooks/useAuth'
 import { useHome } from '../hooks/useHome'
 import { useLiveGames } from '../hooks/useLiveGames'
@@ -44,8 +43,8 @@ function Searching({ timeControl, stage, connected, onCancel }) {
           {!connected
             ? 'Reconnecting to the realtime link…'
             : stage === 'waiting'
-              ? 'Room opened — the game starts the moment a rival sits down.'
-              : 'Looking for an open room…'}
+              ? 'In the queue — the game starts the moment a rival with the same time control joins.'
+              : 'Joining the matchmaking queue…'}
         </p>
       </div>
       <Button variant="secondary" size="sm" onClick={onCancel}>
@@ -196,7 +195,7 @@ export default function LobbyPage() {
   const { socket, status } = useSocket()
   const { stats, features, capabilities } = useHome()
   const connected = status === 'connected'
-  const mm = useMatchmaking({ socket, connected })
+  const mm = useMatchmaking({ socket })
   const { unsupported } = mm
   const searching = mm.phase === 'searching'
   const live = useLiveGames(!searching)
@@ -303,11 +302,6 @@ export default function LobbyPage() {
           </ul>
         </section>
       )}
-
-      <Toast open={mm.abandonedRoom} title="Pencarian dibatalkan" onClose={mm.dismissAbandoned} duration={7000}>
-        Pembatalan room di server (Coming Soon) belum tersedia — room Anda bisa saja masih diisi lawan. Jika begitu,
-        game akan muncul di “Games in progress”.
-      </Toast>
 
       {!connected && (
         <p className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-slate-500">
