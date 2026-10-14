@@ -150,6 +150,9 @@ test("register hashes passwords, login issues JWT, and protected home requires J
   const homeBody = await home.json();
   assert.equal(homeBody.home.user.username, username);
   assert.deepEqual(homeBody.home.stats, { wins: 0, draws: 0, losses: 0 });
+  assert.equal(homeBody.home.features.find((feature) => feature.id === "history")?.status, "available");
+  assert.equal(homeBody.home.features.find((feature) => feature.id === "analysis")?.status,
+    homeBody.home.game_modes.find((mode) => mode.id === "bot")?.status);
 
   const secondEmail = `pvp-${suffix}@example.com`;
   const secondUsername = `pvp_${suffix}`;

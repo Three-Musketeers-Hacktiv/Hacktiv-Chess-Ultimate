@@ -19,6 +19,7 @@ router.post("/:id/resign", controller.resign);
 router.post("/:id/draw-offers", controller.offerDraw);
 router.post("/:id/draw-offers/response", controller.respondDraw);
 router.post("/:id/draw-claims", controller.claimDraw);
+router.post("/:id/analysis", controller.analyzeGame);
 router.get("/:id", controller.getGame);
 
 module.exports = router;
