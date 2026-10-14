@@ -65,7 +65,23 @@ erDiagram
         TEXT fen_after
         TIMESTAMPTZ created_at
     }
+
+    REVOKED_TOKENS {
+        CHAR token_hash PK
+        TIMESTAMPTZ expires_at
+        TIMESTAMPTZ created_at
+    }
 ```
+
+## `revoked_tokens`
+
+| Kolom | Tipe PostgreSQL | Aturan |
+|---|---|---|
+| `token_hash` | `CHAR(64)` | Primary key; SHA-256 fingerprint JWT, raw token tidak disimpan |
+| `expires_at` | `TIMESTAMPTZ` | Wajib; masa kedaluwarsa JWT |
+| `created_at` | `TIMESTAMPTZ` | Wajib; waktu pencabutan, default waktu sekarang |
+
+Indeks `expires_at` mendukung penghapusan fingerprint kedaluwarsa; baris kedaluwarsa dibersihkan saat endpoint logout dipanggil. Middleware autentikasi memeriksa pencabutan pada REST dan handshake Socket.IO. Baris yang sudah kedaluwarsa tidak memberi akses karena JWT sendiri tetap diverifikasi terhadap expiry.
 
 ## `users`
 

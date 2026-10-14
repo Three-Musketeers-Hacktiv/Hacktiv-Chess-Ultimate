@@ -104,7 +104,7 @@ Password disimpan sebagai hash bcrypt. Server tidak mengembalikan password atau 
 
 Register dibatasi 5 request dan login 10 request per alamat IP setiap 15 menit; pelanggaran menghasilkan `429` dan header `Retry-After`. Pembatas saat ini berada di memori proses, sehingga hanya sesuai satu instance dan akan reset saat server restart. Sebelum menjalankan beberapa instance, ganti penyimpanan limiter dengan store bersama. Password harus minimal 8 karakter dan maksimal 72 byte UTF-8 agar tidak terpotong oleh bcrypt.
 
-MVP belum menyediakan logout yang mencabut token, refresh token, verifikasi email, atau pemulihan password. Token yang sudah diterbitkan tetap berlaku sampai kedaluwarsa.
+Logout mencabut token JWT yang sedang digunakan; request REST berikutnya dan koneksi Socket.IO baru dengan token itu akan ditolak. Koneksi Socket.IO aktif dengan token tersebut juga diputus. Klien perlu menghapus token dari penyimpanan lokal. MVP belum menyediakan refresh token, verifikasi email, atau pemulihan password.
 
 ### Alur login, home, dan pemilihan mode
 
@@ -200,6 +200,20 @@ Response `200`:
   "user": { "id": "<uuid>", "username": "player1" }
 }
 ```
+
+### Logout
+
+`POST /api/auth/logout` (**Auth**)
+
+Mencabut token yang dikirim pada header `Authorization: Bearer <token>`. Token tidak dapat digunakan lagi untuk REST atau koneksi Socket.IO sampai kedaluwarsanya. Socket yang sudah terhubung dengan token tersebut diputus.
+
+Response `200`:
+
+```json
+{ "status": "success", "message": "Logout berhasil." }
+```
+
+Tanpa token, token tidak valid/kedaluwarsa, atau token yang sudah dicabut menghasilkan `401`. Klien harus menghapus token lokal setelah logout berhasil.
 
 Endpoint game, profil, dan analisis yang memerlukan akun menolak request tanpa JWT. Detail game dan riwayat pribadi hanya dapat dibaca pemain terkait; pengecualian baca-saja untuk penonton hanya berlaku melalui `GET /api/games/live` dan Socket.IO `watch_game` pada game PvP yang sedang berlangsung. Hanya pemain yang dapat mengirim langkah atas nama akunnya sendiri.
 

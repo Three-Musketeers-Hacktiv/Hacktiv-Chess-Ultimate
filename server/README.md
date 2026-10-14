@@ -17,13 +17,13 @@ npm run dev
 
 Jalankan `npm test` setelah database testing dimigrasikan untuk memeriksa autentikasi, alur PvP, dan alur bot dengan engine tiruan. Uji UCI langsung memerlukan binary yang dirujuk oleh `STOCKFISH_PATH`.
 
-Server memakai database `hacktiv_chess_development` untuk `NODE_ENV=development`, `hacktiv_chess_testing` untuk `NODE_ENV=test`, dan `hacktiv_chess_production` untuk `NODE_ENV=production`. Untuk testing, jalankan `npm run db:migrate:testing` setelah membuat database testing. Isi host, nama database, user, dan password production sebelum menjalankan `npm run db:create:production` dan `npm run db:migrate:production`. Migration awal membuat tabel `users`, `games`, dan `game_moves` beserta constraint dan indeks skema. Endpoint `GET /health` menjadi health check API.
+Server memakai database `hacktiv_chess_development` untuk `NODE_ENV=development`, `hacktiv_chess_testing` untuk `NODE_ENV=test`, dan `hacktiv_chess_production` untuk `NODE_ENV=production`. Untuk testing, jalankan `npm run db:migrate:testing` setelah membuat database testing. Isi host, nama database, user, dan password production sebelum menjalankan `npm run db:create:production` dan `npm run db:migrate:production`. Migration membuat tabel `users`, `games`, `game_moves`, dan `revoked_tokens` beserta constraint dan indeks skema. Endpoint `GET /health` menjadi health check API.
 
 Command `npm start` menjalankan entry point yang sama tanpa mode watch. Sequelize CLI memakai konfigurasi, model, dan migration di dalam `src/`; migration awal membuat tabel `users`, `games`, dan `game_moves`.
 
 Untuk register dan login, backend menggunakan bcrypt dan JWT. Ganti `JWT_SECRET` di `.env` dengan secret acak sebelum menggunakan endpoint login. Login berlaku 7 hari; request ke `GET /` memerlukan header `Authorization: Bearer <token>`.
 
-MVP belum memiliki logout yang mencabut token, refresh token, verifikasi email, atau pemulihan password. Rate limit autentikasi tersimpan di memori satu proses.
+Logout tersedia melalui `POST /api/auth/logout`. Endpoint ini mencabut JWT yang sedang digunakan sampai masa berlakunya habis dan memutus koneksi Socket.IO yang memakai token tersebut. Klien tetap perlu menghapus token dari penyimpanan lokal. MVP belum menyediakan refresh token, verifikasi email, atau pemulihan password. Rate limit autentikasi tersimpan di memori satu proses.
 
 ## Alur pengguna yang tersedia
 
