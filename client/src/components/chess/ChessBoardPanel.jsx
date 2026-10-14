@@ -1,8 +1,6 @@
 import { memo, useMemo } from 'react'
 import { Chessboard } from 'react-chessboard'
-
-const LIGHT = { backgroundColor: '#a9b3c9' }
-const DARK = { backgroundColor: '#4a5876' }
+import { CHESSBOARD_THEMES } from './boardThemes'
 
 const lastMoveStyle = { backgroundColor: 'rgba(16, 185, 129, 0.32)' }
 const selectedStyle = { backgroundColor: 'rgba(139, 92, 246, 0.55)' }
@@ -20,18 +18,72 @@ const NOTATION = {
   userSelect: 'none',
 }
 
+const pieceAssets = import.meta.glob('./assets/chess_pieces/**/*.svg', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+})
+
+const boardAssets = import.meta.glob('./assets/chess_boards/*.svg', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+})
+
+const colorCode = {
+  white: 'l',
+  black: 'd',
+  blue: 'b',
+  green: 'g',
+  red: 'r',
+  yellow: 'y',
+}
+
+const pieceCode = {
+  K: 'k',
+  Q: 'q',
+  R: 'r',
+  B: 'b',
+  N: 'n',
+  P: 'p',
+}
+
+function makePieces(whiteColor, blackColor) {
+  const pieces = {}
+
+  for (const [side, color] of [['w', whiteColor], ['b', blackColor]]) {
+    const colorLetter = colorCode[color]
+    if (!colorLetter) throw new RangeError(`Unsupported chess piece color: ${color}`)
+
+    for (const [piece, pieceLetter] of Object.entries(pieceCode)) {
+      const path =
+        `./assets/chess_pieces/${color}/Chess_` +
+        `${pieceLetter}${colorLetter}t45.svg`
+      const src = pieceAssets[path]
+      if (!src) throw new Error(`Missing chess piece asset: ${path}`)
+
+      pieces[`${side}${piece}`] = () => (
+        <img
+          src={src}
+          alt=""
+          draggable={false}
+          style={{ display: 'block', width: '100%', height: '100%' }}
+        />
+      )
+    }
+  }
+
+  return pieces
+}
+
 const BOARD_OPTIONS_STATIC = {
   id: 'hcu-board',
-  darkSquareStyle: DARK,
-  lightSquareStyle: LIGHT,
   animationDurationInMs: 220,
   showAnimations: true,
   allowDragOffBoard: false,
   allowDrawingArrows: false,
   clearArrowsOnClick: false,
   dragActivationDistance: 4,
-  darkSquareNotationStyle: { color: '#cbd5e1' },
-  lightSquareNotationStyle: { color: '#475569' },
   alphaNotationStyle: { ...NOTATION, bottom: 2, right: 5 },
   numericNotationStyle: { ...NOTATION, top: 3, left: 4 },
   dropSquareStyle: { boxShadow: 'inset 0 0 0 3px rgba(139, 92, 246, 0.85)' },
@@ -43,6 +95,9 @@ const BOARD_OPTIONS_STATIC = {
  * clock ticks, chat, connection flaps etc. never touch it.
  */
 export const ChessBoardPanel = memo(function ChessBoardPanel({
+  whitePieceColor = 'white',
+  blackPieceColor = 'black',
+  boardTheme = 'classic',
   fen,
   orientation = 'white',
   lastMove = null,
@@ -56,6 +111,16 @@ export const ChessBoardPanel = memo(function ChessBoardPanel({
   onPieceDrag,
   canDragPiece,
 }) {
+  const pieces = useMemo(
+    () => makePieces(whitePieceColor, blackPieceColor),
+    [whitePieceColor, blackPieceColor],
+  )
+  const theme = CHESSBOARD_THEMES.find(({ id }) => id === boardTheme)
+  if (!theme) throw new RangeError(`Unsupported chessboard theme: ${boardTheme}`)
+
+  const boardImage = boardAssets[`./assets/chess_boards/${theme.asset}`]
+  if (!boardImage) throw new Error(`Missing chessboard asset: ${theme.asset}`)
+
   const squareStyles = useMemo(() => {
     const styles = {}
     if (lastMove) {
@@ -73,6 +138,16 @@ export const ChessBoardPanel = memo(function ChessBoardPanel({
   const options = useMemo(
     () => ({
       ...BOARD_OPTIONS_STATIC,
+      pieces,
+      boardStyle: {
+        backgroundImage: `url("${boardImage}")`,
+        backgroundSize: '100% 100%',
+        backgroundRepeat: 'no-repeat',
+      },
+      darkSquareStyle: { backgroundColor: 'transparent' },
+      lightSquareStyle: { backgroundColor: 'transparent' },
+      darkSquareNotationStyle: { color: theme.dark },
+      lightSquareNotationStyle: { color: theme.light },
       position: fen,
       boardOrientation: orientation,
       squareStyles,
@@ -83,7 +158,20 @@ export const ChessBoardPanel = memo(function ChessBoardPanel({
       onPieceDrag,
       onSquareClick,
     }),
-    [fen, orientation, squareStyles, arrows, interactive, canDragPiece, onPieceDrop, onPieceDrag, onSquareClick],
+    [
+      fen,
+      orientation,
+      squareStyles,
+      arrows,
+      interactive,
+      canDragPiece,
+      onPieceDrop,
+      onPieceDrag,
+      onSquareClick,
+      pieces,
+      boardImage,
+      theme,
+    ],
   )
 
   return (
