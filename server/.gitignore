@@ -1,0 +1,15 @@
+node_modules
+
+# Local environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and test output
+*.log
+logs/
+coverage/
+
+# Operating system files
+.DS_Store
+Thumbs.db
