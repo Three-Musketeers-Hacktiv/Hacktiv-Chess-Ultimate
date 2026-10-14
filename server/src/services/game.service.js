@@ -398,14 +398,29 @@ async function playBotMove(gameId, reservation) {
   try {
     const pending = await Game.findByPk(gameId, { attributes: ["mode", "status", "current_fen", "bot_difficulty"] });
     if (!pending || pending.mode !== "bot" || pending.status !== "in_progress" || new Chess(pending.current_fen).turn() !== "b") {
-      reservation.release();
       return null;
     }
     fen = pending.current_fen;
-    const uci = await reservation.run(fen, pending.bot_difficulty);
+    let uci;
+    try {
+      uci = await reservation.run(fen, pending.bot_difficulty);
+    } catch (error) {
+      const failed = await finishBotEngineFailure(gameId, fen);
+      if (failed) return failed;
+      throw error;
+    }
     const from = uci.slice(0, 2);
     const to = uci.slice(2, 4);
     const promotion = uci[4] || undefined;
+    const enginePosition = new Chess(fen);
+    let engineMove;
+    try { engineMove = enginePosition.move({ from, to, promotion }); }
+    catch { /* illegal engine output is handled as an engine failure below */ }
+    if (!engineMove) {
+      const failed = await finishBotEngineFailure(gameId, fen);
+      if (failed) return failed;
+      throw new Error("Stockfish returned an illegal move.");
+    }
     return await enqueueGameAction(gameId, () => sequelize.transaction(async (transaction) => {
       const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
       if (!game || game.mode !== "bot" || game.status !== "in_progress" || game.current_fen !== fen) return null;
@@ -442,10 +457,9 @@ async function playBotMove(gameId, reservation) {
         pgn: buildPgn(history, game.result || "*"), history, gameOver,
       };
     }));
-  } catch (error) {
-    const failed = fen ? await finishBotEngineFailure(gameId, fen) : null;
-    if (failed) return failed;
-    throw error;
+  } finally {
+    // Also releases an unconsumed reservation when the database lookup fails.
+    reservation.release();
   }
 }
 

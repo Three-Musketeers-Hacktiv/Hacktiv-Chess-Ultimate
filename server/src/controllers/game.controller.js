@@ -109,7 +109,10 @@ const makeMove = asyncHandler(async (request, response) => {
   if (botReservation) {
     void gameService.playBotMove(request.params.id, botReservation)
       .then((botResult) => broadcast(request, botResult))
-      .catch((error) => console.error(`Bot move failed for game ${request.params.id}: ${error.message}`));
+      .catch((error) => {
+        console.error(`Bot move failed for game ${request.params.id}: ${error.message}`);
+        request.app.get("retryBotTurn")?.(request.params.id, (result) => broadcast(request, result));
+      });
   }
 });
 
