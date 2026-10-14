@@ -3,6 +3,7 @@ const express = require("express");
 const authenticate = require("./middleware/auth");
 const authRoutes = require("./routes/auth.routes");
 const gameRoutes = require("./routes/game.routes");
+const profileRoutes = require("./routes/profile.routes");
 const { getHome } = require("./controllers/home.controller");
 
 const app = express();
@@ -16,6 +17,7 @@ app.use(express.json({ limit: "16kb" }));
 
 app.use("/api/auth", authRoutes);
 app.use("/api/games", gameRoutes);
+app.use("/api/profile", profileRoutes);
 
 app.get("/health", (_request, response) => {
   response.status(200).json({ status: "ok" });

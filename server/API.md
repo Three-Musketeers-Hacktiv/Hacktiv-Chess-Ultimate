@@ -4,7 +4,7 @@ Dokumen ini mendefinisikan kontrak backend MVP berbasis Node.js dan Express. HTT
 
 ## Status implementasi
 
-Autentikasi, home, alur PvP, game bot, endpoint riwayat pribadi, dan analisis game selesai tersedia. Mode bot dan analisis memerlukan file Stockfish pada `STOCKFISH_PATH` yang dapat diakses server. Join by room dan profil terpisah belum termasuk MVP.
+Autentikasi, home, profil/statistik dasar, alur PvP, game bot, endpoint riwayat pribadi, dan analisis game selesai tersedia. Mode bot dan analisis memerlukan file Stockfish pada `STOCKFISH_PATH` yang dapat diakses server. Join by room belum termasuk MVP.
 
 ## Konvensi
 
@@ -148,6 +148,7 @@ Response `200`:
     ],
     "features": [
       { "id": "history", "label": "Riwayat Permainan", "status": "available" },
+      { "id": "profile", "label": "Profil dan Statistik", "status": "available" },
       { "id": "analysis", "label": "Analisis Permainan", "status": "available" },
       { "id": "daily_puzzle", "label": "Puzzle Harian", "status": "planned" },
       { "id": "tournaments", "label": "Turnamen", "status": "planned" }
@@ -401,9 +402,28 @@ Hanya pemain game yang dapat melihat detail. Response memuat FEN terakhir, PGN, 
 
 ### Profil dan statistik
 
-`GET /api/profile/me` (**Auth**, belum tersedia; rancangan)
+`GET /api/profile/me` (**Auth**)
 
-Response memuat ID, username, statistik menang/seri/kalah, dan hingga 50 game selesai beserta PGN.
+Mengembalikan profil pengguna yang sedang login, statistik seluruh game selesai miliknya, dan hingga 50 game selesai terbaru beserta PGN. Game yang masih menunggu atau berlangsung tidak masuk statistik maupun daftar ini.
+
+```json
+{
+  "status": "success",
+  "profile": {
+    "id": "<uuid>",
+    "username": "alice",
+    "stats": { "wins": 4, "draws": 1, "losses": 2, "total_games": 7 },
+    "games": [{
+      "id": "<uuid>", "mode": "pvp", "color": "w", "opponent": "bob",
+      "result": "1-0", "termination_reason": "checkmate",
+      "started_at": "<datetime>", "ended_at": "<datetime>",
+      "pgn": "[Event \"Hacktiv Chess\"]\n[White \"alice\"]\n[Black \"bob\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0"
+    }]
+  }
+}
+```
+
+Endpoint hanya mengambil data pengguna dari JWT dan tidak menerima `user_id`. Statistik mencakup semua game selesai; daftar game dibatasi 50 item terbaru. Tidak ada rating Elo atau statistik pembukaan pada MVP.
 
 ### Analisis pascapertandingan
 
