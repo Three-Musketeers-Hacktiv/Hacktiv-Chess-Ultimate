@@ -19,7 +19,7 @@ async function main() {
   if (!response.ok) throw new Error(`GitHub release lookup failed: HTTP ${response.status}`);
 
   const release = await response.json();
-  const asset = release.assets.find(({ name }) => /^stockfish-(?:ubuntu|linux)-x86-64\.tar$/i.test(name));
+  const asset = release.assets.find(({ name }) => name === "stockfish-linux-x86-64-universal.tar.gz");
   if (!asset) throw new Error(`No Linux x64 Stockfish archive found in release ${VERSION}.`);
   if (!asset.digest?.startsWith("sha256:")) throw new Error("GitHub release did not provide a SHA-256 digest for the Stockfish archive.");
 
@@ -33,7 +33,7 @@ async function main() {
   try {
     const archivePath = path.join(tempDir, asset.name);
     fs.writeFileSync(archivePath, archive);
-    const extraction = spawnSync("tar", ["-xf", archivePath, "-C", tempDir], { encoding: "utf8" });
+    const extraction = spawnSync("tar", ["-xzf", archivePath, "-C", tempDir], { encoding: "utf8" });
     if (extraction.error || extraction.status !== 0) {
       throw extraction.error || new Error(`Unable to extract Stockfish archive: ${extraction.stderr}`);
     }
@@ -55,7 +55,7 @@ function findExecutable(directory) {
     if (entry.isDirectory()) {
       const nested = findExecutable(candidate);
       if (nested) return nested;
-    } else if (entry.isFile() && /^stockfish(?:-ubuntu-x86-64)?$/i.test(entry.name)) {
+    } else if (entry.isFile() && /^stockfish(?:-(?:ubuntu|linux)-x86-64(?:-universal)?)?$/i.test(entry.name)) {
       return candidate;
     }
   }
