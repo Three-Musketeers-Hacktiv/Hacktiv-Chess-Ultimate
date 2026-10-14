@@ -4,7 +4,7 @@ Backend untuk MVP game catur online. API dirancang menggunakan Node.js dan Expre
 
 ## Menjalankan fondasi server
 
-Gunakan Node.js dan PostgreSQL. Salin `.env.example` menjadi `.env`, lalu isi password PostgreSQL untuk development dan testing. File `.env` tidak boleh di-commit.
+Gunakan Node.js dan PostgreSQL. Salin `.env.example` menjadi `.env`, lalu isi password PostgreSQL untuk development dan testing serta ganti `JWT_SECRET` dengan nilai acak yang panjang. File `.env` tidak boleh di-commit.
 
 ```powershell
 Copy-Item .env.example .env
@@ -15,9 +15,15 @@ npm run db:migrate:testing
 npm run dev
 ```
 
+Jalankan `npm test` setelah database testing dimigrasikan untuk memeriksa alur autentikasi.
+
 Server memakai database `hacktiv_chess_development` untuk `NODE_ENV=development`, `hacktiv_chess_testing` untuk `NODE_ENV=test`, dan `hacktiv_chess_production` untuk `NODE_ENV=production`. Untuk testing, jalankan `npm run db:migrate:testing` setelah membuat database testing. Isi host, nama database, user, dan password production sebelum menjalankan `npm run db:create:production` dan `npm run db:migrate:production`. Migration awal membuat tabel `users`, `games`, dan `game_moves` beserta constraint dan indeks skema. Endpoint `GET /health` menjadi health check API.
 
 Command `npm start` menjalankan entry point yang sama tanpa mode watch. Sequelize CLI memakai konfigurasi, model, dan migration di dalam `src/`; migration awal membuat tabel `users`, `games`, dan `game_moves`.
+
+Untuk register dan login, backend menggunakan bcrypt dan JWT. Ganti `JWT_SECRET` di `.env` dengan secret acak sebelum menggunakan endpoint login. Login berlaku 7 hari; request ke `GET /` memerlukan header `Authorization: Bearer <token>`.
+
+MVP belum memiliki logout yang mencabut token, refresh token, verifikasi email, atau pemulihan password. Rate limit autentikasi tersimpan di memori satu proses.
 
 ## Alur pengguna
 
@@ -138,6 +144,6 @@ History `game_moves` menjadi sumber PGN; PGN dibentuk saat dibutuhkan. `games.cu
 
 ## Status fondasi
 
-Fondasi server sudah tersedia: Express dan Socket.IO, konfigurasi Sequelize untuk development/testing/production, model `User`, `Game`, dan `GameMove`, serta tiga migration awal. Endpoint runtime yang tersedia saat ini hanya `GET /health`; autentikasi, game, lobby, bot Stockfish, dan endpoint lain di dokumen API belum diimplementasikan. Server dapat dijalankan setelah PostgreSQL tersedia dan database development berhasil dimigrasikan.
+Fondasi server sudah tersedia: Express dan Socket.IO, konfigurasi Sequelize untuk development/testing/production, model `User`, `Game`, dan `GameMove`, serta tiga migration awal. Endpoint runtime yang tersedia adalah `GET /health`, register/login, dan home terautentikasi `GET /`. Fitur game, lobby, dan bot Stockfish belum diimplementasikan.
 
-Untuk deployment production, isi kredensial database production di environment variables platform. Secret JWT dan path executable Stockfish akan diperlukan saat fitur terkait dibuat. Jangan commit `.env` atau secret.
+Rate limit register/login saat ini disimpan di memori proses, sesuai satu instance MVP; gunakan penyimpanan bersama sebelum menjalankan beberapa instance. Untuk deployment production, isi kredensial database dan `JWT_SECRET` di environment variables platform. Jangan commit `.env` atau secret.

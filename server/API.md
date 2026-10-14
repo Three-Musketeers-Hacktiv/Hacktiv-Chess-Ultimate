@@ -94,7 +94,11 @@ Satu baris mewakili satu langkah (half-move).
 3. Kirim JWT sebagai `Authorization: Bearer <token>` pada endpoint bertanda **Auth**.
 4. Untuk Socket.IO, kirim token yang sama pada `auth.token` saat membuka koneksi.
 
-Password disimpan sebagai hash bcrypt. Server tidak mengembalikan password atau hash. Token berlaku 7 hari. Token hilang, tidak valid, atau kedaluwarsa menghasilkan `401`.
+Password disimpan sebagai hash bcrypt. Server tidak mengembalikan password atau hash. `JWT_SECRET` wajib tersedia di environment server dengan panjang minimal 32 byte; token ditandatangani dengan HS256, berisi UUID pengguna pada claim `sub`, dan berlaku 7 hari. Token hilang, tidak valid, atau kedaluwarsa menghasilkan `401`. Login dengan email yang tidak terdaftar dan password salah mengembalikan pesan `401` yang sama.
+
+Register dibatasi 5 request dan login 10 request per alamat IP setiap 15 menit; pelanggaran menghasilkan `429` dan header `Retry-After`. Pembatas saat ini berada di memori proses, sehingga hanya sesuai satu instance dan akan reset saat server restart. Sebelum menjalankan beberapa instance, ganti penyimpanan limiter dengan store bersama. Password harus minimal 8 karakter dan maksimal 72 byte UTF-8 agar tidak terpotong oleh bcrypt.
+
+MVP belum menyediakan logout yang mencabut token, refresh token, verifikasi email, atau pemulihan password. Token yang sudah diterbitkan tetap berlaku sampai kedaluwarsa.
 
 ### Alur login, home, dan pemilihan mode
 
@@ -137,8 +141,8 @@ Response `200`:
       { "id": "bot", "label": "Melawan Bot", "status": "available" }
     ],
     "features": [
-      { "id": "history", "label": "Riwayat Permainan", "status": "available" },
-      { "id": "analysis", "label": "Analisis Permainan", "status": "available" },
+      { "id": "history", "label": "Riwayat Permainan", "status": "planned" },
+      { "id": "analysis", "label": "Analisis Permainan", "status": "planned" },
       { "id": "daily_puzzle", "label": "Puzzle Harian", "status": "planned" },
       { "id": "tournaments", "label": "Turnamen", "status": "planned" }
     ]
@@ -168,7 +172,7 @@ Response `201`:
 { "status": "success", "message": "Akun berhasil dibuat. Silakan login." }
 ```
 
-Username harus 3–24 karakter dan hanya berisi huruf, angka, `_`, atau `-`. Email harus valid; password minimal 8 karakter. Email atau username yang sudah dipakai menghasilkan `409`.
+Username harus 3–24 karakter dan hanya berisi huruf ASCII, angka, `_`, atau `-`; email dinormalisasi ke huruf kecil dan harus valid. Password minimal 8 karakter dan maksimal 72 byte UTF-8. Email atau username yang sudah dipakai menghasilkan `409`; input tidak valid menghasilkan `400`.
 
 ### Login
 
