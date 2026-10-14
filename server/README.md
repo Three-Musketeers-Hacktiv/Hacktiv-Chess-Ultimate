@@ -43,7 +43,7 @@ MVP belum memiliki logout yang mencabut token, refresh token, verifikasi email, 
 - Membatalkan antrean sendiri; satu pemain hanya dapat memiliki satu game PvP aktif (menunggu atau sedang berlangsung). Retry mengembalikan antrean/game yang sama, dan pemain dapat mencari lagi setelah game selesai.
 - Menonton game PvP yang sedang berlangsung. Join by room atau tantangan teman belum termasuk MVP.
 - Validasi langkah dengan `chess.js`; menyimpan history/FEN, membentuk PGN, dan mengurutkan aksi per game pada satu proses.
-- Menampilkan detail dan history pemain, daftar PvP aktif, serta snapshot baca-saja untuk penonton.
+- Menampilkan riwayat lintas game milik pengguna dengan cursor pagination, detail dan langkah game, daftar PvP aktif, serta snapshot baca-saja untuk penonton.
 - Game melawan Stockfish dengan tingkat easy/medium/hard, empat preset waktu, validasi langkah engine, dan penyimpanan langkah bot.
 - Stockfish dijalankan melalui UCI dari `STOCKFISH_PATH`; maksimal dua proses aktif dan lima pekerjaan antrean, masing-masing proses memakai satu thread. Game bot aktif yang menunggu giliran Stockfish dijadwalkan kembali setelah server restart. Jika antrean penuh, game tetap aktif dan dicoba ulang; kegagalan engine yang nyata diselesaikan sebagai remis.
 - Menyiarkan `game_started` ke kedua pemain saat match ditemukan, lalu `game_state`, `move`, dan `game_over` melalui Socket.IO.
@@ -55,7 +55,7 @@ MVP belum memiliki logout yang mencabut token, refresh token, verifikasi email, 
 ## Belum diimplementasikan
 
 - Analisis PGN menggunakan Stockfish.
-- Daftar riwayat lintas game (`GET /api/games`), profil/statistik terpisah, rating, pembukaan favorit, dan grafik perkembangan.
+- Profil/statistik terpisah, rating, pembukaan favorit, dan grafik perkembangan.
 - Puzzle, turnamen, teman/chat/klub, gamifikasi, dan antarmuka frontend.
 - Antrean game dan rate limit berbasis memori hanya sesuai satu instance; deployment beberapa instance perlu store dan pengurutan bersama.
 

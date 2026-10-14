@@ -312,6 +312,113 @@ async function listLiveGames() {
   }));
 }
 
+function parseHistoryLimit(value) {
+  if (value === undefined) return 20;
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
+    fail(400, "INVALID_HISTORY_LIMIT", "limit harus berupa bilangan bulat antara 1 dan 50.");
+  }
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit > 50) {
+    fail(400, "INVALID_HISTORY_LIMIT", "limit harus berupa bilangan bulat antara 1 dan 50.");
+  }
+  return limit;
+}
+
+function decodeHistoryCursor(value) {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    fail(400, "INVALID_HISTORY_CURSOR", "cursor riwayat tidak valid.");
+  }
+  try {
+    const cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    const createdAt = new Date(cursor.created_at);
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (typeof cursor.created_at !== "string" || Number.isNaN(createdAt.getTime()) ||
+        createdAt.toISOString() !== cursor.created_at || !uuidPattern.test(cursor.id)) {
+      fail(400, "INVALID_HISTORY_CURSOR", "cursor riwayat tidak valid.");
+    }
+    return { createdAt, id: cursor.id };
+  } catch (error) {
+    if (error instanceof GameError) throw error;
+    fail(400, "INVALID_HISTORY_CURSOR", "cursor riwayat tidak valid.");
+  }
+}
+
+async function listGameHistory(userId, query = {}) {
+  const limit = parseHistoryLimit(query.limit);
+  const cursor = decodeHistoryCursor(query.cursor);
+  const conditions = [{
+    [Op.or]: [{ white_player_id: userId }, { black_player_id: userId }],
+  }];
+  if (cursor) {
+    conditions.push({
+      [Op.or]: [
+        { created_at: { [Op.lt]: cursor.createdAt } },
+        { created_at: cursor.createdAt, id: { [Op.lt]: cursor.id } },
+      ],
+    });
+  }
+
+  const foundGames = await Game.findAll({
+    where: { [Op.and]: conditions },
+    attributes: [
+      "id", "mode", "status", "bot_difficulty", "white_player_id", "black_player_id",
+      "time_control_minutes", "increment_seconds", "result", "termination_reason",
+      "created_at", "started_at", "ended_at",
+    ],
+    include: [
+      { model: User, as: "whitePlayer", attributes: ["username"] },
+      { model: User, as: "blackPlayer", attributes: ["username"], required: false },
+    ],
+    order: [["created_at", "DESC"], ["id", "DESC"]],
+    limit: limit + 1,
+  });
+  const hasMore = foundGames.length > limit;
+  const games = foundGames.slice(0, limit);
+  const moveCounts = games.length
+    ? await GameMove.findAll({
+      attributes: ["game_id", [sequelize.fn("COUNT", sequelize.col("id")), "move_count"]],
+      where: { game_id: { [Op.in]: games.map((game) => game.id) } },
+      group: ["game_id"],
+      raw: true,
+    })
+    : [];
+  const countsByGameId = new Map(moveCounts.map((row) => [row.game_id, Number(row.move_count)]));
+  const items = games.map((game) => {
+    const isWhite = game.white_player_id === userId;
+    const opponent = game.mode === "bot"
+      ? `Stockfish (${game.bot_difficulty})`
+      : isWhite ? game.blackPlayer?.username || null : game.whitePlayer?.username || null;
+    const timeControl = Object.entries(TIME_CONTROLS)
+      .find(([, preset]) => preset.minutes === game.time_control_minutes)?.[0] || null;
+    return {
+      id: game.id,
+      mode: game.mode,
+      status: game.status,
+      color: isWhite ? "w" : "b",
+      opponent,
+      time_control: {
+        id: timeControl,
+        initial_seconds: game.time_control_minutes * 60,
+        increment_seconds: game.increment_seconds,
+      },
+      bot_difficulty: game.bot_difficulty,
+      result: game.result,
+      termination_reason: game.termination_reason,
+      move_count: countsByGameId.get(game.id) || 0,
+      created_at: game.created_at,
+      started_at: game.started_at,
+      ended_at: game.ended_at,
+    };
+  });
+  const lastGame = games.at(-1);
+  const nextCursor = hasMore && lastGame
+    ? Buffer.from(JSON.stringify({ created_at: lastGame.created_at.toISOString(), id: lastGame.id })).toString("base64url")
+    : null;
+
+  return { games: items, pagination: { limit, has_more: hasMore, next_cursor: nextCursor } };
+}
+
 async function makeMove(userId, gameId, moveInput, receivedAt = new Date()) {
   if (!moveInput || typeof moveInput.from !== "string" || typeof moveInput.to !== "string" ||
       (moveInput.promotion !== undefined && !["q", "r", "b", "n"].includes(moveInput.promotion))) {
@@ -636,7 +743,7 @@ async function findActiveGameIds() {
 }
 
 module.exports = {
-  GameError, TIME_CONTROLS, createRoom, cancelMatchmaking, listLiveGames,
+  GameError, TIME_CONTROLS, createRoom, cancelMatchmaking, listLiveGames, listGameHistory,
   makeMove, getGame, watchGame, resign, expireGame, findActiveGameIds,
   offerDraw, respondDraw, claimDraw, playBotMove, findPendingBotGames, failPendingBotTurn,
 };

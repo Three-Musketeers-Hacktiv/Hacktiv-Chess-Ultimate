@@ -11,6 +11,7 @@ router.param("id", (_request, response, next, id) => {
   return next();
 });
 router.post("/", controller.createGame);
+router.get("/", controller.listHistory);
 router.get("/live", controller.listLive);
 router.delete("/:id/matchmaking", controller.cancelMatchmaking);
 router.post("/:id/moves", controller.makeMove);
