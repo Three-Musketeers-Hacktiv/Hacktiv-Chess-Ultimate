@@ -78,6 +78,11 @@ const listLive = asyncHandler(async (_request, response) => {
   response.json({ status: "success", games: await gameService.listLiveGames() });
 });
 
+const listHistory = asyncHandler(async (request, response) => {
+  const result = await gameService.listGameHistory(request.user.id, request.query);
+  response.json({ status: "success", ...result });
+});
+
 const cancelMatchmaking = asyncHandler(async (request, response) => {
   response.json({
     status: "success",
@@ -154,4 +159,4 @@ const claimDraw = asyncHandler(async (request, response) => {
   });
 });
 
-module.exports = { createGame, cancelMatchmaking, listLive, makeMove, getGame, resign, offerDraw, respondDraw, claimDraw };
+module.exports = { createGame, cancelMatchmaking, listLive, listHistory, makeMove, getGame, resign, offerDraw, respondDraw, claimDraw };

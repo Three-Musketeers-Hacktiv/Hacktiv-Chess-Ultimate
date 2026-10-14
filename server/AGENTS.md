@@ -8,6 +8,7 @@ Build the Hacktiv Chess MVP in this `server` directory.
 
 - Authentication and the PvP playable flow are implemented: random matchmaking by selected time control, queue cancellation, legal moves, persisted history, game clocks, core game endings, read-only watching, and Socket.IO updates. Keep these working while adding future features.
 - Bot games are available only when the executable configured by `STOCKFISH_PATH` can be accessed; home must report that runtime capability accurately. A full UCI move test is required before reporting the engine integration verified.
+- Authenticated `GET /api/games` provides a user's PvP and bot game summaries using cursor pagination; keep ownership checks and stable ordering when changing this endpoint.
 - The `README.md` and `API.md` must distinguish implemented behavior from planned behavior whenever code changes.
 
 ## Stack and architecture

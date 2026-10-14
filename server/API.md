@@ -4,7 +4,7 @@ Dokumen ini mendefinisikan kontrak backend MVP berbasis Node.js dan Express. HTT
 
 ## Status implementasi
 
-Autentikasi, home, alur PvP, dan game bot yang didaftar di bawah tersedia. Mode bot memerlukan binary Stockfish yang dapat dijalankan melalui `STOCKFISH_PATH`. Join by room belum termasuk MVP. Daftar history lintas game, profil terpisah, dan analisis Stockfish masih rancangan.
+Autentikasi, home, alur PvP, game bot, dan daftar riwayat game pribadi yang didaftar di bawah tersedia. Mode bot memerlukan binary Stockfish yang dapat dijalankan melalui `STOCKFISH_PATH`. Join by room belum termasuk MVP. Profil terpisah dan analisis Stockfish masih rancangan.
 
 ## Konvensi
 
@@ -364,9 +364,34 @@ Game berakhir otomatis pada checkmate, stalemate, dead position yang dikenali, f
 
 ### Riwayat game pengguna
 
-`GET /api/games` (**Auth**, belum tersedia)
+`GET /api/games` (**Auth**)
 
-Response `200` berisi hingga 100 game milik pengguna, termasuk mode, status, hasil, preset waktu, tingkat bot bila ada, lawan, termination reason, dan waktu pembaruan.
+Mengembalikan ringkasan game PvP dan bot yang melibatkan pengguna terautentikasi, termasuk game yang sedang menunggu atau berlangsung. Daftar tidak menyertakan FEN atau semua langkah; gunakan `GET /api/games/:id` untuk detail.
+
+Query opsional:
+
+- `limit`: jumlah item, default `20`, minimum `1`, maksimum `50`.
+- `cursor`: cursor opaque dari response sebelumnya. Jangan membuat atau mengubah nilainya di client.
+
+Urutan game terbaru dahulu menggunakan `created_at` lalu ID sebagai tie-breaker. Cursor menjaga halaman berikutnya tetap berada setelah item terakhir halaman sebelumnya meskipun ada game baru.
+
+Response `200`:
+
+```json
+{
+  "status": "success",
+  "games": [{
+    "id": "<uuid>", "mode": "bot", "status": "completed", "color": "w",
+    "opponent": "Stockfish (medium)",
+    "time_control": { "id": "blitz", "initial_seconds": 180, "increment_seconds": 2 },
+    "bot_difficulty": "medium", "result": "1/2-1/2", "termination_reason": "engine_failure",
+    "move_count": 28, "created_at": "<datetime>", "started_at": "<datetime>", "ended_at": "<datetime>"
+  }],
+  "pagination": { "limit": 20, "has_more": true, "next_cursor": "<opaque-cursor>" }
+}
+```
+
+Game PvP yang masih menunggu memiliki `opponent: null`, `started_at: null`, dan `ended_at: null`. Saat tidak ada halaman berikutnya, `has_more` bernilai `false` dan `next_cursor` bernilai `null`. `400 INVALID_HISTORY_LIMIT` atau `400 INVALID_HISTORY_CURSOR` dikembalikan untuk parameter pagination tidak valid.
 
 ### Detail game
 
