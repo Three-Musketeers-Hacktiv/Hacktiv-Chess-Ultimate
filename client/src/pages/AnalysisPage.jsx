@@ -8,9 +8,9 @@ import { Button } from '../components/ui/Button'
 import { Card, Eyebrow } from '../components/ui/Card'
 import { Spinner } from '../components/ui/Spinner'
 import { useGameAnalysis } from '../hooks/useGameAnalysis'
-import { useHome } from '../hooks/useHome'
 import { buildReplayItems, buildReviewItems, summarize } from '../lib/analysis'
 import { describeOutcome, replayPgn, resolveVerdict } from '../lib/chess'
+import { MAX_ANALYZED_PLIES } from '../lib/config'
 import { lastGame } from '../lib/storage'
 import { cn } from '../lib/cn'
 
@@ -60,16 +60,20 @@ export default function AnalysisPage() {
 
   const pgn = state?.pgn || stored?.pgn || ''
   const meta = stored && (!pgn || stored.pgn === pgn || !state?.pgn) ? stored : null
-
-  const { capabilities } = useHome()
-  const { status, analysis, error, retry } = useGameAnalysis(pgn, capabilities.analysis)
-  const [selectedIndex, setSelectedIndex] = useState(0)
+  // Only a fallback for the (unusual) case without a PGN: the server then analyses the stored game by id.
+  const gameId = state?.gameId || (meta?.pgn === pgn ? meta?.gameId : null) || null
 
   const plies = useMemo(() => replayPgn(pgn), [pgn])
-  const comingSoon = status === 'unavailable'
+  const tooLong = plies.length > MAX_ANALYZED_PLIES
+  // The request fires on mount: the PGN of the finished game goes to `POST /api/game/analyze`.
+  const { status, analysis, error, retry } = useGameAnalysis({ pgn, gameId }, !tooLong)
+  const [selectedIndex, setSelectedIndex] = useState(0)
+
+  // No engine pass possible (game too long, engine offline) → plain replay, with a notice that says why.
+  const replayOnly = status === 'unavailable' || status === 'idle'
   const items = useMemo(
-    () => (comingSoon ? buildReplayItems(plies) : buildReviewItems(analysis, plies)),
-    [comingSoon, analysis, plies],
+    () => (replayOnly ? buildReplayItems(plies) : buildReviewItems(analysis, plies)),
+    [replayOnly, analysis, plies],
   )
   const counts = useMemo(() => summarize(items), [items])
 
@@ -93,7 +97,7 @@ export default function AnalysisPage() {
   const verdict = meta?.outcome ? resolveVerdict(meta.outcome, meta.me) : null
 
   return (
-    <div className="space-y-8 animate-rise">
+    <div className="flex min-h-screen w-full flex-col space-y-8 overflow-y-auto bg-slate-950 pb-8 text-slate-100 animate-rise">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div className="space-y-2">
           <Eyebrow>Post-game analysis</Eyebrow>
@@ -139,7 +143,7 @@ export default function AnalysisPage() {
           />
         </section>
 
-        <section className="min-w-0 space-y-5" aria-label="Move classifications">
+        <section className="h-auto min-w-0 w-full space-y-5" aria-label="Move classifications">
           {status === 'loading' && <LoadingList />}
 
           {status === 'error' && (
@@ -151,25 +155,39 @@ export default function AnalysisPage() {
             </div>
           )}
 
-          {comingSoon && (
+          {replayOnly && (
             <div className="animate-pop rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-4 shadow-glow">
-              <p className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-violet-200">
-                Stockfish analysis · Coming Soon
-              </p>
-              <p className="mt-2 text-sm text-slate-300">
-                Feature under development by the Backend Team. Move classifications and better-move suggestions will
-                appear here once the server exposes <code className="font-mono text-violet-200">/api/game/analyze</code>.
-                Meanwhile you can replay the game move by move.
-              </p>
+              {tooLong ? (
+                <>
+                  <p className="font-mono text-xs font-semibold uppercase tracking-widest text-violet-200">
+                    Analysis limit · {MAX_ANALYZED_PLIES} half-moves
+                  </p>
+                  <p className="mt-2 text-sm text-slate-300">
+                    The engine reviews games of up to {MAX_ANALYZED_PLIES} half-moves; this one has {plies.length}. You
+                    can still replay it move by move.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="font-mono text-xs font-semibold uppercase tracking-widest text-violet-200">
+                    Stockfish analysis · Engine offline
+                  </p>
+                  <p className="mt-2 text-sm text-slate-300">
+                    The server could not start Stockfish (check <span className="font-mono">STOCKFISH_PATH</span>). You
+                    can still replay the game move by move below.
+                  </p>
+                </>
+              )}
             </div>
           )}
 
-          {(status === 'success' || comingSoon) && (
+          {(status === 'success' || replayOnly) && (
             <>
               {items.length > 0 ? (
                 <>
-                  {!comingSoon && <AnalysisSummary counts={counts} total={items.length} />}
-                  <ol className="relative -mr-2 max-h-[calc(100dvh-26rem)] min-h-72 space-y-2 overflow-y-auto pr-2">
+                  {!replayOnly && <AnalysisSummary counts={counts} total={items.length} />}
+                  <div className="w-full max-h-[300px] overflow-y-auto overscroll-contain pr-1 [-webkit-overflow-scrolling:touch] sm:max-h-[400px]">
+                    <ol className="space-y-2">
                     {items.map((item, index) => (
                       <MoveChip
                         key={item.key}
@@ -179,7 +197,8 @@ export default function AnalysisPage() {
                         onSelect={setSelectedIndex}
                       />
                     ))}
-                  </ol>
+                    </ol>
+                  </div>
                 </>
               ) : (
                 <Alert tone="info">The engine returned no evaluated moves for this game.</Alert>

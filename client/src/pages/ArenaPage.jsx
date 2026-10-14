@@ -7,6 +7,7 @@ import { GameOverModal } from '../components/chess/GameOverModal'
 import { MoveList } from '../components/chess/MoveList'
 import { PlayerCard } from '../components/chess/PlayerCard'
 import { PromotionPicker } from '../components/chess/PromotionPicker'
+import { RematchChallengeModal } from '../components/chess/RematchChallengeModal'
 import { Alert } from '../components/ui/Alert'
 import { Button } from '../components/ui/Button'
 import { Card, Eyebrow } from '../components/ui/Card'
@@ -15,12 +16,15 @@ import { Modal } from '../components/ui/Modal'
 import { FullPageLoader } from '../components/ui/Spinner'
 import { Toast } from '../components/ui/Toast'
 import { useAuth } from '../hooks/useAuth'
+import { useBotGame } from '../hooks/useBotGame'
+import { useHome } from '../hooks/useHome'
 import { useLiveGame } from '../hooks/useLiveGame'
 import { useRematch } from '../hooks/useRematch'
 import { useSocket } from '../hooks/useSocket'
 import { cn } from '../lib/cn'
 import { orientationOf } from '../lib/chess'
 import { timeControlLabel } from '../lib/config'
+import { currentRating } from '../lib/elo'
 
 export default function ArenaPage() {
   const { roomId } = useParams()
@@ -126,11 +130,28 @@ function ArenaSession({ roomId }) {
     setOffering(false)
   }, [offerDraw])
 
-  const rematch = useRematch({ socket, roomId })
+  // Rematch: PvP uses the socket handshake (`request_rematch` → `rematch_pending` → `rematch_started`, which
+  // navigates to the new room: this session is keyed by room id, so board, clocks, orientation and move log
+  // restart clean). A game against Stockfish is just a new `POST /api/games { mode: 'bot' }`.
+  const { capabilities } = useHome()
+  const isBot = info.mode === 'bot'
+  const pvpRematch = useRematch({ socket, roomId, supported: capabilities.rematch })
+  const botGame = useBotGame()
+  const { start: startBotGame } = botGame
+  const botRematch = useCallback(
+    () => startBotGame({ timeControl: info.timeControl ?? 'blitz', difficulty: info.botDifficulty ?? 'medium' }),
+    [startBotGame, info.timeControl, info.botDifficulty],
+  )
+  const rematchStatus = isBot ? (botGame.starting ? 'starting' : 'idle') : pvpRematch.status
+  const rematchBusy = ['starting', 'requesting', 'waiting', 'started'].includes(rematchStatus)
+  const startRematch = isBot ? botRematch : pvpRematch.request
 
   // Leaving unmounts this session, which drops the chess.js instance and every piece of live-game state.
   const goLobby = useCallback(() => navigate('/lobby'), [navigate])
-  const openAnalysis = useCallback(() => navigate('/analysis', { state: { pgn: getPgn() } }), [navigate, getPgn])
+  const openAnalysis = useCallback(
+    () => navigate('/analysis', { state: { pgn: getPgn(), gameId: roomId } }),
+    [navigate, getPgn, roomId],
+  )
   const closeOver = useCallback(() => setDismissedOver(true), [])
 
   const { resign } = game
@@ -156,11 +177,13 @@ function ArenaSession({ roomId }) {
   const outgoingOffer = hasOffer && !incomingOffer
 
   return (
-    <div className="grid animate-rise gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] xl:grid-cols-[minmax(0,1fr)_24rem]">
+    // No transform animation on the board's ancestors (opacity-only fade): see the note in `index.css`.
+    <div className="grid animate-fade gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] xl:grid-cols-[minmax(0,1fr)_24rem]">
       {/* ───────── Board column ───────── */}
       <section className="mx-auto w-full max-w-[min(100%,calc(100dvh-15rem))] space-y-3" aria-label="Chess board">
         <PlayerCard
           name={nameOf(topColor)}
+          rating={currentRating(info.elo, topColor)}
           color={topColor}
           clocks={game.clocks}
           active={live && game.turn === topColor}
@@ -183,6 +206,7 @@ function ArenaSession({ roomId }) {
 
         <PlayerCard
           name={nameOf(bottomColor)}
+          rating={currentRating(info.elo, bottomColor)}
           color={bottomColor}
           clocks={game.clocks}
           active={live && game.turn === bottomColor}
@@ -204,7 +228,14 @@ function ArenaSession({ roomId }) {
         )}
 
         <Card className="space-y-4 p-5">
-          <Eyebrow>Live match</Eyebrow>
+          <div className="flex items-center justify-between gap-3">
+            <Eyebrow>Live match</Eyebrow>
+            {info.ranked && (
+              <span className="rounded-md border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest text-emerald-300 shadow-glow-emerald">
+                Ranked
+              </span>
+            )}
+          </div>
           <StatusPill
             outcome={outcome}
             status={info.status}
@@ -241,9 +272,14 @@ function ArenaSession({ roomId }) {
           {outcome ? (
             <>
               {!spectating && (
-                <Button className="flex-1" onClick={openAnalysis}>
-                  Review analysis
-                </Button>
+                <>
+                  <Button className="flex-1" onClick={openAnalysis}>
+                    Review analysis
+                  </Button>
+                  <Button variant="violet" loading={rematchBusy} disabled={rematchBusy} onClick={startRematch}>
+                    Rematch
+                  </Button>
+                </>
               )}
               <Button variant="secondary" className={spectating ? 'flex-1' : undefined} onClick={goLobby}>
                 <SearchIcon className="size-4" />
@@ -252,19 +288,22 @@ function ArenaSession({ roomId }) {
             </>
           ) : live && !spectating ? (
             <>
-              <Button
-                variant="secondary"
-                className="flex-1"
-                loading={offering}
-                disabled={offering || Boolean(game.drawOffer) || game.moves.length < 2 || !game.isMyTurn}
-                title={drawHint}
-                onClick={sendDrawOffer}
-              >
-                <span aria-hidden="true" className="font-mono text-base leading-none">
-                  ½
-                </span>
-                Offer Draw
-              </Button>
+              {/* The server only takes draw offers in PvP; against Stockfish you can still claim by rule. */}
+              {!isBot && (
+                <Button
+                  variant="secondary"
+                  className="flex-1"
+                  loading={offering}
+                  disabled={offering || Boolean(game.drawOffer) || game.moves.length < 2 || !game.isMyTurn}
+                  title={drawHint}
+                  onClick={sendDrawOffer}
+                >
+                  <span aria-hidden="true" className="font-mono text-base leading-none">
+                    ½
+                  </span>
+                  Offer Draw
+                </Button>
+              )}
               <Button variant="danger" className="flex-1" onClick={() => setConfirmResign(true)}>
                 <FlagIcon className="size-4" />
                 Resign
@@ -292,21 +331,45 @@ function ArenaSession({ roomId }) {
         open={Boolean(outcome) && !dismissedOver}
         outcome={outcome}
         me={me}
+        myColor={myColor}
         spectating={spectating}
-        rematchStatus={rematch.status}
-        rematchSupported={rematch.supported}
-        onRematch={rematch.request}
+        rematchStatus={rematchStatus}
+        rematchError={pvpRematch.error}
+        onRematch={startRematch}
         onAnalyze={openAnalysis}
         onNewOpponent={goLobby}
         onDismiss={closeOver}
       />
 
+      <RematchChallengeModal
+        open={Boolean(pvpRematch.challenge) && !isBot && !spectating}
+        from={pvpRematch.challenge?.by}
+        ranked={info.ranked}
+        busy={pvpRematch.status === 'requesting'}
+        onAccept={pvpRematch.request}
+        onDecline={pvpRematch.decline}
+      />
+
       <Toast
-        open={rematch.status === 'unavailable'}
-        title="Fitur Rematch (Coming Soon)"
-        onClose={rematch.reset}
+        open={!isBot && ['unavailable', 'error', 'declined'].includes(pvpRematch.status)}
+        tone={pvpRematch.status === 'unavailable' ? 'info' : 'error'}
+        title={
+          pvpRematch.status === 'unavailable'
+            ? 'Rematch (Coming Soon)'
+            : pvpRematch.status === 'declined'
+              ? 'Rematch declined'
+              : 'Rematch could not start'
+        }
+        onClose={pvpRematch.reset}
       >
-        Sedang dikembangkan oleh Backend.
+        {pvpRematch.status === 'unavailable'
+          ? 'The server does not offer PvP rematches yet.'
+          : pvpRematch.status === 'declined'
+            ? 'Your opponent declined the rematch.'
+            : pvpRematch.error}
+      </Toast>
+      <Toast open={Boolean(botGame.error)} title="Rematch could not start" onClose={botGame.dismissError}>
+        {botGame.error}
       </Toast>
 
       <Modal open={confirmResign} onClose={() => setConfirmResign(false)} labelledBy="resign-title">

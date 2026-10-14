@@ -32,6 +32,8 @@ const outcomeFromState = (state) => ({
   termination_reason: state.termination_reason,
   result: state.result,
   winner: state.result === '1-0' ? state.white : state.result === '0-1' ? state.black : null,
+  ranked: Boolean(state.ranked),
+  elo: state.elo ?? null, // `{ white|black: { before, change, after } }` — the booked rating movement
 })
 
 /**
@@ -52,7 +54,17 @@ export function useLiveGame({ socket, connected, roomId, me, meId }) {
   const [drawOffer, setDrawOffer] = useState(null) // username of whoever has an offer pending
   const [drawUnavailable, setDrawUnavailable] = useState(false) // backend never answered an offer
   const drawTimer = useRef(null)
-  const [info, setInfo] = useState({ loaded: false, white: null, black: null, status: 'waiting', timeControl: null })
+  const [info, setInfo] = useState({
+    loaded: false,
+    white: null,
+    black: null,
+    status: 'waiting',
+    timeControl: null,
+    mode: 'pvp', // pvp | bot (bot games: we are White, Stockfish answers through the room's `move` event)
+    botDifficulty: null,
+    ranked: false, // rated PvP game: both ratings move when it ends
+    elo: null, // `{ white|black: { before, change, after } }`; change/after are null until the game is over
+  })
   const [clocks, setClocks] = useState(null)
   const [outcome, setOutcome] = useState(null)
   const [fatal, setFatal] = useState('')
@@ -118,7 +130,7 @@ export function useLiveGame({ socket, connected, roomId, me, meId }) {
     (result) => {
       outcomeRef.current = result
       setOutcome(result)
-      setInfo((prev) => ({ ...prev, status: 'completed' }))
+      setInfo((prev) => ({ ...prev, status: 'completed', elo: result.elo ?? prev.elo }))
       setDrawOffer(null)
       ackDraw()
       select(null)
@@ -143,6 +155,10 @@ export function useLiveGame({ socket, connected, roomId, me, meId }) {
         black: state.black ?? null,
         status: state.status,
         timeControl: state.time_control ?? null,
+        mode: state.mode ?? 'pvp',
+        botDifficulty: state.bot_difficulty ?? null,
+        ranked: Boolean(state.ranked),
+        elo: state.elo ?? null,
       })
       if (state.status === 'completed' && !outcomeRef.current) finish(outcomeFromState(state))
 
@@ -405,6 +421,7 @@ export function useLiveGame({ socket, connected, roomId, me, meId }) {
   useEffect(() => {
     if (!outcome || !myColor) return
     lastGame.set({
+      gameId: roomId,
       pgn: toMovetext(chess.history()),
       color: myColor,
       me,
@@ -412,7 +429,7 @@ export function useLiveGame({ socket, connected, roomId, me, meId }) {
       outcome,
       endedAt: new Date().toISOString(),
     })
-  }, [outcome, snap.moves.length, chess, myColor, me, opponentName])
+  }, [outcome, snap.moves.length, chess, myColor, me, opponentName, roomId])
 
   const getPgn = useCallback(() => toMovetext(chess.history()), [chess])
 

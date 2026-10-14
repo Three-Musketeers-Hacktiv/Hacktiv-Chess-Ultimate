@@ -1,6 +1,9 @@
 import { memo, useMemo } from 'react'
 import { Chessboard } from 'react-chessboard'
+import { useTheme } from '../../hooks/useTheme'
+import { findPieceSet } from '../../lib/board-presets'
 import { CHESSBOARD_THEMES } from './boardThemes'
+import { PIECE_TYPES, pieceUrl } from './pieceAssets'
 
 const lastMoveStyle = { backgroundColor: 'rgba(16, 185, 129, 0.32)' }
 const selectedStyle = { backgroundColor: 'rgba(139, 92, 246, 0.55)' }
@@ -18,49 +21,18 @@ const NOTATION = {
   userSelect: 'none',
 }
 
-const pieceAssets = import.meta.glob('./assets/chess_pieces/**/*.svg', {
-  eager: true,
-  query: '?url',
-  import: 'default',
-})
-
 const boardAssets = import.meta.glob('./assets/chess_boards/*.svg', {
   eager: true,
   query: '?url',
   import: 'default',
 })
 
-const colorCode = {
-  white: 'l',
-  black: 'd',
-  blue: 'b',
-  green: 'g',
-  red: 'r',
-  yellow: 'y',
-}
-
-const pieceCode = {
-  K: 'k',
-  Q: 'q',
-  R: 'r',
-  B: 'b',
-  N: 'n',
-  P: 'p',
-}
-
 function makePieces(whiteColor, blackColor) {
   const pieces = {}
 
   for (const [side, color] of [['w', whiteColor], ['b', blackColor]]) {
-    const colorLetter = colorCode[color]
-    if (!colorLetter) throw new RangeError(`Unsupported chess piece color: ${color}`)
-
-    for (const [piece, pieceLetter] of Object.entries(pieceCode)) {
-      const path =
-        `./assets/chess_pieces/${color}/Chess_` +
-        `${pieceLetter}${colorLetter}t45.svg`
-      const src = pieceAssets[path]
-      if (!src) throw new Error(`Missing chess piece asset: ${path}`)
+    for (const piece of PIECE_TYPES) {
+      const src = pieceUrl(color, piece)
 
       pieces[`${side}${piece}`] = () => (
         <img
@@ -95,9 +67,9 @@ const BOARD_OPTIONS_STATIC = {
  * clock ticks, chat, connection flaps etc. never touch it.
  */
 export const ChessBoardPanel = memo(function ChessBoardPanel({
-  whitePieceColor = 'white',
-  blackPieceColor = 'black',
-  boardTheme = 'classic',
+  whitePieceColor = null,
+  blackPieceColor = null,
+  boardTheme = null,
   fen,
   orientation = 'white',
   lastMove = null,
@@ -105,21 +77,25 @@ export const ChessBoardPanel = memo(function ChessBoardPanel({
   selected = null,
   legalTargets = [],
   arrows = [],
+  badge = null,
   interactive = false,
   onPieceDrop,
   onSquareClick,
   onPieceDrag,
   canDragPiece,
 }) {
-  const pieces = useMemo(
-    () => makePieces(whitePieceColor, blackPieceColor),
-    [whitePieceColor, blackPieceColor],
-  )
-  const theme = CHESSBOARD_THEMES.find(({ id }) => id === boardTheme)
-  if (!theme) throw new RangeError(`Unsupported chessboard theme: ${boardTheme}`)
+  const {
+    boardTheme: { darkSquare, lightSquare, piecesType },
+  } = useTheme()
+  const pieceSet = findPieceSet(piecesType)
+  const whiteColor = whitePieceColor ?? pieceSet.white
+  const blackColor = blackPieceColor ?? pieceSet.black
+  const pieces = useMemo(() => makePieces(whiteColor, blackColor), [whiteColor, blackColor])
+  const theme = boardTheme ? CHESSBOARD_THEMES.find(({ id }) => id === boardTheme) : null
+  if (boardTheme && !theme) throw new RangeError(`Unsupported chessboard theme: ${boardTheme}`)
 
-  const boardImage = boardAssets[`./assets/chess_boards/${theme.asset}`]
-  if (!boardImage) throw new Error(`Missing chessboard asset: ${theme.asset}`)
+  const boardImage = theme ? boardAssets[`./assets/chess_boards/${theme.asset}`] : null
+  if (theme && !boardImage) throw new Error(`Missing chessboard asset: ${theme.asset}`)
 
   const squareStyles = useMemo(() => {
     const styles = {}
@@ -135,22 +111,41 @@ export const ChessBoardPanel = memo(function ChessBoardPanel({
     return styles
   }, [lastMove, checkSquare, selected, legalTargets])
 
+  // `badge: { square, content }` draws `content` over that square's corner (react-chessboard v5 has no
+  // `customSquareStyles`; `squareRenderer` is its hook for square decorations). The renderer re-creates what
+  // the default one does — a full-size div carrying the square's highlight style around the piece.
+  const squareRenderer = useMemo(() => {
+    if (!badge) return undefined
+    return function renderSquare({ square, children }) {
+      return (
+        <div style={{ position: 'relative', width: '100%', height: '100%', ...squareStyles[square] }}>
+          {children}
+          {square === badge.square && badge.content}
+        </div>
+      )
+    }
+  }, [badge, squareStyles])
+
   const options = useMemo(
     () => ({
       ...BOARD_OPTIONS_STATIC,
       pieces,
       boardStyle: {
-        backgroundImage: `url("${boardImage}")`,
-        backgroundSize: '100% 100%',
-        backgroundRepeat: 'no-repeat',
+        ...(theme && {
+          backgroundImage: `url("${boardImage}")`,
+          backgroundSize: '100% 100%',
+          backgroundRepeat: 'no-repeat',
+        }),
+        borderRadius: '0.7rem', // the wrapper no longer clips, so the board rounds its own corners
       },
-      darkSquareStyle: { backgroundColor: 'transparent' },
-      lightSquareStyle: { backgroundColor: 'transparent' },
-      darkSquareNotationStyle: { color: theme.dark },
-      lightSquareNotationStyle: { color: theme.light },
+      darkSquareStyle: { backgroundColor: theme ? 'transparent' : darkSquare },
+      lightSquareStyle: { backgroundColor: theme ? 'transparent' : lightSquare },
+      darkSquareNotationStyle: { color: theme ? theme.dark : lightSquare },
+      lightSquareNotationStyle: { color: theme ? theme.light : darkSquare },
       position: fen,
       boardOrientation: orientation,
       squareStyles,
+      squareRenderer,
       arrows,
       allowDragging: interactive,
       canDragPiece,
@@ -162,6 +157,7 @@ export const ChessBoardPanel = memo(function ChessBoardPanel({
       fen,
       orientation,
       squareStyles,
+      squareRenderer,
       arrows,
       interactive,
       canDragPiece,
@@ -171,11 +167,14 @@ export const ChessBoardPanel = memo(function ChessBoardPanel({
       pieces,
       boardImage,
       theme,
+      darkSquare,
+      lightSquare,
     ],
   )
 
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-700/50 shadow-[0_0_40px_rgba(139,92,246,0.14)] ring-1 ring-black/40">
+    // `relative`, and no `overflow-hidden`/transform here: the drag preview must never be clipped or re-anchored.
+    <div className="relative rounded-xl border border-slate-700/50 shadow-[0_0_40px_rgba(139,92,246,0.14)] ring-1 ring-black/40">
       <Chessboard options={options} />
     </div>
   )

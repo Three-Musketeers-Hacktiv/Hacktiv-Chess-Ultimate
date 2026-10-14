@@ -77,6 +77,7 @@ const REASONS = Object.freeze({
   fivefold_repetition: 'Fivefold repetition',
   fifty_move_rule: 'Fifty-move rule',
   seventy_five_move_rule: 'Seventy-five-move rule',
+  engine_failure: 'Engine failure',
 })
 
 /** Human text for a `game_over` payload (`termination_reason`, `winner`). */
