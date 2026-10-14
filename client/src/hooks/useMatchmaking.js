@@ -2,167 +2,192 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { gamesApi } from '../lib/api'
 import { EVENTS } from '../lib/config'
-import { unsupportedTimes } from '../lib/storage'
-import { useAuth } from './useAuth'
+import { queue, unsupportedTimes } from '../lib/storage'
 
-const WATCH_POLL_MS = 2000
+const STATUS_POLL_MS = 3000
 
 /**
- * Instant matchmaking on top of the server's room API.
+ * Instant matchmaking on top of the server-side queue.
  *
- * start(timeControl):
- *  1. join a rival's open room with that time control, else
- *  2. reuse one of our own open rooms with that time control, else
- *  3. create a room.
- * While a room of ours is waiting, the socket watches it (`watch_game`, re-sent every 2 s because the
- * server never announces a joiner). As soon as the snapshot says `in_progress` — or a `game_started`
- * event arrives — we navigate to `/arena/:id`; the arena then runs on the server's own clocks.
+ * start(timeControl) → `POST /api/games { mode: 'pvp', time_control }`
+ *   • 200 `matched`   → an opponent was waiting (or we already had a running game): go to `/arena/:id`.
+ *   • 202 `searching` → we are queued. The server announces the pairing with a private `game_started`
+ *                       socket event; a light `GET /api/games/:id` poll covers a missed event/reconnect.
  *
- * cancel(): resets the UI at once and emits `leave_room` so a server that supports cancellation can drop
- * the room from its queue. The current server has no such listener (nor a delete route), so a room that
- * was already opened stays open until somebody joins it — `abandonedRoom` flags that case for the UI
- * ("Coming Soon" notice). The same best-effort `leave_room` is sent if the lobby unmounts mid-search.
+ * cancel() → resets the UI at once, then `DELETE /api/games/:id/matchmaking`. If somebody paired with
+ *   us in the meantime the server answers `409 MATCH_ALREADY_FOUND` and we go straight to that game.
  *
- * If the server answers a create request with a different time control than requested, that option is
- * remembered as unsupported ("Coming Soon").
+ * The server has no "my queue" lookup, so the queue entry we created is remembered (`lib/storage`):
+ * after a page reload the search resumes (or the game opens) instead of leaving a ghost queue behind.
+ * Leaving the lobby mid-search cancels the queue entry.
  */
-export function useMatchmaking({ socket, connected }) {
+export function useMatchmaking({ socket }) {
   const navigate = useNavigate()
-  const { user } = useAuth()
   const [phase, setPhase] = useState('idle') // idle | searching
-  const [stage, setStage] = useState('lookup') // lookup | waiting
+  const [stage, setStage] = useState('lookup') // lookup (request in flight) | waiting (queued)
   const [searchingFor, setSearchingFor] = useState(null)
   const [roomId, setRoomId] = useState(null)
   const [error, setError] = useState('')
-  const [abandonedRoom, setAbandonedRoom] = useState(false)
   const [unsupported, setUnsupported] = useState(unsupportedTimes.get)
 
   // Mirrors for callbacks / unmount cleanup that must read the latest values synchronously.
   const runRef = useRef(0)
   const roomRef = useRef(null)
-  const timeRef = useRef(null)
-  const socketRef = useRef(socket)
-  const startedRef = useRef(false) // a game actually began → the room must NOT be left
-  useEffect(() => {
-    socketRef.current = socket
-  }, [socket])
+  const startedRef = useRef(false) // a game actually began → the queue entry must NOT be cancelled
 
   const trackRoom = useCallback((id) => {
     roomRef.current = id
     setRoomId(id)
   }, [])
 
-  /** Best-effort: tell a cancellation-aware server to drop our waiting room. Ignored by today's server. */
-  const emitLeave = useCallback((id) => {
-    if (!id) return
-    socketRef.current?.emit(EVENTS.LEAVE_ROOM, { time_control: timeRef.current, room_id: id })
-  }, [])
-
-  const cancel = useCallback(() => {
-    runRef.current += 1 // invalidates any in-flight start()
-    const opened = roomRef.current
-    emitLeave(opened)
+  const showIdle = useCallback(() => {
     trackRoom(null)
     setPhase('idle')
     setStage('lookup')
     setSearchingFor(null)
-    setAbandonedRoom(Boolean(opened))
-  }, [emitLeave, trackRoom])
+  }, [trackRoom])
 
-  const dismissAbandoned = useCallback(() => setAbandonedRoom(false), [])
+  const goArena = useCallback(
+    (id) => {
+      startedRef.current = true
+      queue.clear()
+      navigate(`/arena/${id}`)
+    },
+    [navigate],
+  )
+
+  /** Remove our queue entry on the server; a paired game wins over the cancellation. */
+  const dropQueue = useCallback(
+    async (id) => {
+      try {
+        await gamesApi.cancelMatchmaking(id)
+        queue.clear()
+      } catch (err) {
+        if (err?.code === 'MATCH_ALREADY_FOUND') goArena(id)
+        else if (err?.status === 404) queue.clear() // already gone
+        else setError(err?.message ?? 'Could not cancel the search.')
+      }
+    },
+    [goArena],
+  )
+
+  const cancel = useCallback(() => {
+    runRef.current += 1 // invalidates any in-flight start()
+    const queued = roomRef.current
+    showIdle()
+    if (queued) dropQueue(queued)
+  }, [showIdle, dropQueue])
 
   const start = useCallback(
     async (timeControl) => {
       const run = ++runRef.current
       const alive = () => runRef.current === run
-      const me = user?.username?.toLowerCase()
 
-      timeRef.current = timeControl
       startedRef.current = false
       setPhase('searching')
       setStage('lookup')
       setSearchingFor(timeControl)
-      setAbandonedRoom(false)
       setError('')
 
       try {
-        const open = await gamesApi.listOpen()
-        if (!alive()) return
-        const rooms = (open?.games ?? []).filter((room) => room.time_control === timeControl)
-
-        // A rival is already waiting with the same time control → take the seat immediately.
-        const rival = rooms.find((room) => room.white?.toLowerCase() !== me)
-        if (rival) {
-          try {
-            const joined = await gamesApi.join(rival.id)
-            startedRef.current = true
-            navigate(`/arena/${joined.game.id}`) // we are seated now, even if the user just hit cancel
-            return
-          } catch {
-            /* the room was taken in the meantime — fall through to our own room */
-          }
-        }
-        if (!alive()) return
-
-        // Otherwise wait in a room of ours (reuse an existing one instead of piling up new rooms).
-        const own = rooms.find((room) => room.white?.toLowerCase() === me)
-        if (own) {
-          trackRoom(own.id)
-          setStage('waiting')
-          return
-        }
-
-        const created = await gamesApi.create(timeControl)
-        const granted = created?.game?.time_control?.id
+        const res = await gamesApi.create(timeControl)
+        const game = res?.game
+        const granted = game?.time_control?.id
         if (granted && granted !== timeControl) setUnsupported(unsupportedTimes.add(timeControl))
-        if (!alive()) {
-          emitLeave(created?.game?.id) // cancelled while the room was being created
+
+        // Paired at once — we are seated now, even if the user just hit cancel.
+        if (res?.matchmaking?.status === 'matched') {
+          goArena(game.id)
           return
         }
-        trackRoom(created.game.id)
+
+        queue.set({ id: game.id, time_control: timeControl })
+        if (!alive()) {
+          dropQueue(game.id) // cancelled while the request was in flight
+          return
+        }
+        trackRoom(game.id)
         setStage('waiting')
       } catch (err) {
         if (!alive()) return
+        if (err?.code === 'INVALID_TIME_CONTROL') setUnsupported(unsupportedTimes.add(timeControl))
         setError(err?.message ?? 'Matchmaking failed.')
-        setPhase('idle')
-        setSearchingFor(null)
+        showIdle()
       }
     },
-    [user, navigate, trackRoom, emitLeave],
+    [goArena, dropQueue, trackRoom, showIdle],
   )
 
-  // Waiting in our own room: watch it until an opponent sits down.
+  // Page reload while queued → resume the search (or open the game if we were paired meanwhile).
   useEffect(() => {
-    if (!socket || !connected || !roomId) return undefined
+    const saved = queue.get()
+    if (!saved?.id) return undefined
+    let stopped = false
 
-    const goArena = (id) => {
-      startedRef.current = true
-      navigate(`/arena/${id}`)
-    }
-    const onState = (state) => {
-      if (state?.room_id === roomId && state.status === 'in_progress') goArena(roomId)
-    }
-    const onStarted = (payload) => goArena(payload?.room_id ?? roomId)
-    const watch = () => socket.emit(EVENTS.WATCH_GAME, { room_id: roomId })
+    gamesApi
+      .get(saved.id)
+      .then((res) => {
+        if (stopped) return
+        const status = res?.game?.status
+        if (status === 'waiting') {
+          setSearchingFor(saved.time_control ?? null)
+          setPhase('searching')
+          setStage('waiting')
+          trackRoom(saved.id)
+        } else if (status === 'in_progress') {
+          goArena(saved.id)
+        } else {
+          queue.clear()
+        }
+      })
+      .catch((err) => {
+        if (!stopped && (err?.status === 404 || err?.status === 403)) queue.clear()
+      })
 
-    socket.on(EVENTS.GAME_STATE, onState)
-    socket.on(EVENTS.GAME_STARTED, onStarted)
-    watch()
-    const id = setInterval(watch, WATCH_POLL_MS)
     return () => {
-      socket.off(EVENTS.GAME_STATE, onState)
-      socket.off(EVENTS.GAME_STARTED, onStarted)
+      stopped = true
+    }
+  }, [goArena, trackRoom])
+
+  // Queued: wait for `game_started`; poll the game as a safety net (missed event / reconnect).
+  useEffect(() => {
+    if (!roomId) return undefined
+    let stopped = false
+
+    const onStarted = (payload) => {
+      if (!payload?.room_id || payload.room_id === roomId) goArena(payload?.room_id ?? roomId)
+    }
+    socket?.on(EVENTS.GAME_STARTED, onStarted)
+
+    const check = async () => {
+      try {
+        const res = await gamesApi.get(roomId)
+        if (stopped) return
+        if (res?.game?.status === 'in_progress') goArena(roomId)
+      } catch (err) {
+        // The entry vanished (cancelled from another tab/device) → back to the menu.
+        if (!stopped && err?.status === 404) {
+          queue.clear()
+          showIdle()
+        }
+      }
+    }
+    const id = setInterval(check, STATUS_POLL_MS)
+
+    return () => {
+      stopped = true
+      socket?.off(EVENTS.GAME_STARTED, onStarted)
       clearInterval(id)
     }
-  }, [socket, connected, roomId, navigate])
+  }, [socket, roomId, goArena, showIdle])
 
-  // Leaving the lobby mid-search stops the search (and, unless a game began, leaves the room).
+  // Leaving the lobby mid-search stops the search (unless a game began).
   useEffect(() => {
     return () => {
       runRef.current += 1
-      if (roomRef.current && !startedRef.current) emitLeave(roomRef.current)
+      if (roomRef.current && !startedRef.current) dropQueue(roomRef.current)
     }
-  }, [emitLeave])
+  }, [dropQueue])
 
-  return { phase, stage, searchingFor, error, unsupported, abandonedRoom, dismissAbandoned, start, cancel }
+  return { phase, stage, searchingFor, error, unsupported, start, cancel }
 }

@@ -7,7 +7,6 @@ import { lastGame } from '../lib/storage'
 
 const NO_TARGETS = []
 const FATAL_CODES = new Set(['GAME_NOT_FOUND', 'WATCH_FORBIDDEN', 'INVALID_ROOM_ID'])
-const WAITING_POLL_MS = 2500
 const DRAW_ACK_MS = 5000
 
 /** Immutable, render-friendly view of the mutable chess.js instance. */
@@ -39,8 +38,8 @@ const outcomeFromState = (state) => ({
  * Live match controller for the server's REST + Socket.IO contract.
  *
  * - Handshake: `watch_game` joins the room and answers with a `game_state` snapshot (re-sent on every
- *   (re)connect). While a room is `waiting` the server does not announce the joiner, so the snapshot is
- *   re-requested on a light interval until an opponent shows up.
+ *   (re)connect). Only running games can be watched — a queued room is refused (`WATCH_FORBIDDEN`),
+ *   the lobby waits for `game_started` instead.
  * - Outbound: a move is validated by chess.js, applied optimistically, then POSTed. A rejected request
  *   rolls the optimistic move back.
  * - Inbound: the room broadcast (`move`, `game_over`) is applied idempotently by comparing ply counts, so
@@ -227,14 +226,6 @@ export function useLiveGame({ socket, connected, roomId, me, meId }) {
     if (!socket || !connected) return
     socket.emit(EVENTS.WATCH_GAME, { room_id: roomId })
   }, [socket, connected, roomId])
-
-  // The server never announces a joiner to a waiting room, so poll the snapshot until it fills up.
-  const waiting = info.loaded && info.status === 'waiting'
-  useEffect(() => {
-    if (!socket || !connected || !waiting) return undefined
-    const id = setInterval(() => socket.emit(EVENTS.WATCH_GAME, { room_id: roomId }), WAITING_POLL_MS)
-    return () => clearInterval(id)
-  }, [socket, connected, waiting, roomId])
 
   // Transient notices fade on their own.
   useEffect(() => {

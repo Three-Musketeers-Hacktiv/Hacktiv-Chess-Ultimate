@@ -70,12 +70,16 @@ export const authApi = {
     request('/api/auth/login', { method: 'POST', body: { email, password }, signal, auth: false }),
 }
 
-/** PvP rooms: REST creates/joins/moves, Socket.IO (`watch_game`) streams the results back. */
+/**
+ * PvP: the server owns matchmaking. `create` either pairs us at once (`matchmaking.status: "matched"`,
+ * 200) or queues us (`"searching"`, 202) — the match is then announced with the socket event
+ * `game_started`. Moves/resign/draws go through REST; Socket.IO (`watch_game`) streams the results back.
+ */
 export const gamesApi = {
   create: (timeControl, signal) =>
     request('/api/games', { method: 'POST', body: { mode: 'pvp', time_control: timeControl }, signal }),
-  listOpen: (signal) => request('/api/games/open', { signal }),
-  join: (gameId, signal) => request(`/api/games/${gameId}/join`, { method: 'POST', signal }),
+  cancelMatchmaking: (gameId, signal) => request(`/api/games/${gameId}/matchmaking`, { method: 'DELETE', signal }),
+  get: (gameId, signal) => request(`/api/games/${gameId}`, { signal }),
   move: (gameId, move, signal) => request(`/api/games/${gameId}/moves`, { method: 'POST', body: move, signal }),
   resign: (gameId, signal) => request(`/api/games/${gameId}/resign`, { method: 'POST', signal }),
   listLive: (signal) => request('/api/games/live', { signal }),

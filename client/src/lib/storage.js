@@ -30,10 +30,14 @@ export const session = {
     write(localStorage, STORAGE_KEYS.token, null)
     write(localStorage, STORAGE_KEYS.user, null)
     write(sessionStorage, STORAGE_KEYS.lastGame, null)
+    write(localStorage, STORAGE_KEYS.queue, null)
   },
 }
 
-/** Time controls the server ignored when a room was created (shown as "Coming Soon"). */
+// Migration: the pre-v2 key was filled while the server still ignored presets — drop it for good.
+write(localStorage, STORAGE_KEYS.legacyUnsupportedTimes, null)
+
+/** Time controls the server rejected or ignored when a queue entry was created (shown as "Coming Soon"). */
 export const unsupportedTimes = {
   get: () => {
     const value = read(localStorage, STORAGE_KEYS.unsupportedTimes)
@@ -44,6 +48,16 @@ export const unsupportedTimes = {
     write(localStorage, STORAGE_KEYS.unsupportedTimes, next)
     return next
   },
+}
+
+/**
+ * The matchmaking queue entry we created (`{ id, time_control }`). The server has no "my queue" lookup,
+ * so remembering it lets a page reload resume the search — or cancel it.
+ */
+export const queue = {
+  get: () => read(localStorage, STORAGE_KEYS.queue),
+  set: (value) => write(localStorage, STORAGE_KEYS.queue, value),
+  clear: () => write(localStorage, STORAGE_KEYS.queue, null),
 }
 
 /** The last finished match, kept per tab so the analysis page survives a refresh. */
