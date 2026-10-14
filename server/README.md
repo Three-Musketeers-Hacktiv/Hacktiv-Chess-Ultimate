@@ -23,6 +23,8 @@ Command `npm start` menjalankan entry point yang sama tanpa mode watch. Sequeliz
 
 Untuk Railway, atur root directory service ke `server`, set `STOCKFISH_PATH=./.stockfish/stockfish`, dan deploy. Script `postinstall` mengunduh arsip Stockfish 19 resmi untuk Linux x64, memverifikasi SHA-256 dari metadata rilis GitHub, lalu menyiapkan executable. Deploy perlu akses jaringan saat build; platform Linux selain x64 saat ini tidak didukung script ini.
 
+Untuk database Supabase pada `NODE_ENV=production`, server memakai `DATABASE_URL` jika disetel; koneksi PostgreSQL melalui URL tersebut menggunakan SSL dan menggantikan variabel `DB_PRODUCTION_*`. Simpan connection string lengkap di Railway Variables, bukan di repository, dan ganti placeholder password dengan password database yang sebenarnya.
+
 Untuk register dan login, backend menggunakan bcrypt dan JWT. Ganti `JWT_SECRET` di `.env` dengan secret acak sebelum menggunakan endpoint login. Login berlaku 7 hari; request ke `GET /` memerlukan header `Authorization: Bearer <token>`.
 
 Logout tersedia melalui `POST /api/auth/logout`. Endpoint ini mencabut JWT yang sedang digunakan sampai masa berlakunya habis dan memutus koneksi Socket.IO yang memakai token tersebut. Klien tetap perlu menghapus token dari penyimpanan lokal. MVP belum menyediakan refresh token, verifikasi email, atau pemulihan password. Rate limit autentikasi tersimpan di memori satu proses.

@@ -21,8 +21,29 @@ function makeDatabaseConfig(environment, defaultDatabase, allowLocalDefaults = f
   };
 }
 
+function makeProductionConfig() {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) return makeDatabaseConfig("production", "hacktiv_chess_production");
+
+  const url = new URL(connectionString);
+  if (!(["postgres:", "postgresql:"].includes(url.protocol)) || !url.hostname || !url.pathname.slice(1)) {
+    throw new Error("DATABASE_URL must be a valid PostgreSQL connection URL.");
+  }
+
+  return {
+    database: decodeURIComponent(url.pathname.slice(1)),
+    username: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    host: url.hostname,
+    port: Number(url.port || 5432),
+    dialect: "postgres",
+    dialectOptions: { ssl: { rejectUnauthorized: true } },
+    logging: false,
+  };
+}
+
 module.exports = {
   development: makeDatabaseConfig("development", "hacktiv_chess_development", true),
   test: makeDatabaseConfig("test", "hacktiv_chess_testing", true),
-  production: makeDatabaseConfig("production", "hacktiv_chess_production"),
+  production: makeProductionConfig(),
 };
