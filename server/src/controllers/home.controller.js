@@ -30,7 +30,7 @@ const getHome = async (request, response, next) => {
         stats: statsRows[0],
         game_modes: [
           { id: "pvp", label: "PvP", status: "available" },
-          { id: "bot", label: "Melawan Bot", status: "available" },
+          { id: "bot", label: "Melawan Bot", status: "planned" },
         ],
         features: [
           { id: "history", label: "Riwayat Permainan", status: "planned" },

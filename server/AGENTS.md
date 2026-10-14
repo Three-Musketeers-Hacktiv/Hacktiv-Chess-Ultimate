@@ -4,6 +4,13 @@
 
 Build the Hacktiv Chess MVP in this `server` directory.
 
+## Current milestone
+
+- Authentication and the PvP playable flow are implemented: create/list/join rooms, legal moves, persisted history, game clocks, core game endings, read-only watching, and Socket.IO updates. Keep these working while adding future features.
+- The bot and Stockfish integration are the next planned feature, not an available endpoint yet. Do not report it as implemented until the API and tests exercise a real engine move.
+- The home response must mark game modes accurately (`pvp` available, `bot` planned until the bot implementation lands).
+- The `README.md` and `API.md` must distinguish implemented behavior from planned behavior whenever code changes.
+
 ## Stack and architecture
 
 - Use Node.js with Express for the REST API.
