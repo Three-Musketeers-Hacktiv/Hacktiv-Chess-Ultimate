@@ -2,6 +2,7 @@ const gameService = require("../services/game.service");
 
 function registerGameSocket(io) {
   io.on("connection", (socket) => {
+    socket.join(`user:${socket.data.user.id}`);
     socket.on("watch_game", async (payload = {}) => {
       const roomId = payload.room_id;
       if (typeof roomId !== "string") {

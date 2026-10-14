@@ -4,7 +4,7 @@ Dokumen ini mendefinisikan kontrak backend MVP berbasis Node.js dan Express. HTT
 
 ## Status implementasi
 
-Autentikasi, home, dan alur PvP yang didaftar di bawah sudah tersedia: membuat/list/join room, langkah legal, detail history, game aktif untuk penonton, resign, tawaran/klaim remis, jam server, dan Socket.IO. **Mode bot, daftar history lintas game, profil terpisah, serta analisis Stockfish masih rancangan dan belum tersedia.** Body `mode: "bot"` pada `POST /api/games` saat ini ditolak.
+Autentikasi, home, dan alur PvP yang didaftar di bawah sudah tersedia: random matchmaking berdasarkan preset waktu, pembatalan antrean, langkah legal, detail history, game aktif untuk penonton, resign, tawaran/klaim remis, jam server, dan Socket.IO. Join by room belum termasuk MVP. **Mode bot, daftar history lintas game, profil terpisah, serta analisis Stockfish masih rancangan dan belum tersedia.** Body `mode: "bot"` pada `POST /api/games` saat ini ditolak.
 
 ## Konvensi
 
@@ -12,10 +12,11 @@ Autentikasi, home, dan alur PvP yang didaftar di bawah sudah tersedia: membuat/l
 - Request dan response menggunakan JSON.
 - Endpoint bertanda **Auth** memerlukan header `Authorization: Bearer <token>`.
 - ID game dan pengguna berbentuk UUID.
+- Parameter `:id` game yang bukan UUID mengembalikan `400 INVALID_GAME_ID`.
 - **FEN** (*Forsyth–Edwards Notation*) merepresentasikan snapshot posisi papan pada satu saat, termasuk giliran yang harus jalan. API mengembalikan FEN terkini pada game dan FEN setelah langkah bila diperlukan.
 - **PGN** (*Portable Game Notation*) merepresentasikan urutan langkah game, misalnya `1. e4 e5 2. Nf3 Nc6`. History langkah terstruktur disimpan di database; backend membentuk PGN dari langkah yang tersimpan.
 - Backend menggunakan `chess.js` v1.4.0 untuk memvalidasi langkah PvP, menjaga posisi kanonis, serta membentuk FEN/PGN. Integrasi Stockfish belum tersedia.
-- Registrasi dan login wajib sebelum membuat atau bergabung ke game PvP.
+- Registrasi dan login wajib sebelum masuk atau membatalkan antrean PvP.
 
 ## Skema database
 
@@ -79,15 +80,16 @@ Satu baris mewakili satu langkah (half-move).
 
 - `users` berelasi ke `games` sebagai pemain putih dan hitam; `games` memiliki banyak `game_moves`.
 - `mode` hanya `pvp`/`bot`, `status` hanya `waiting`/`in_progress`/`completed`, dan `result` hanya `1-0`/`0-1`/`1/2-1/2` atau `NULL`.
-- Preset waktu: `bullet` = 1 menit + 0 detik increment; `blitz` = 3 menit + 2 detik; `rapid` = 15 menit + 10 detik; `professional` = 60 menit + 30 detik. API menerima ID preset; pasangan durasi/increment ditetapkan server, jam sisa disimpan dalam milidetik, dan jam dihitung server. Pemain yang join room mengikuti preset pembuat room.
+- Preset waktu: `bullet` = 1 menit + 0 detik increment; `blitz` = 3 menit + 2 detik; `rapid` = 15 menit + 10 detik; `professional` = 60 menit + 30 detik. API menerima ID preset; pasangan durasi/increment ditetapkan server, jam sisa disimpan dalam milidetik, dan jam dihitung server. Matchmaking hanya memasangkan pemain dengan preset yang sama.
 - `bot_difficulty` wajib hanya untuk game bot (`easy`, `medium`, `hard`); PvP harus `NULL`. Parameter Stockfish ditentukan server berdasarkan tingkat tersebut.
-- `white_player_id` wajib. `black_player_id` kosong pada bot dan room PvP yang menunggu; jika kedua pemain terisi, ID keduanya harus berbeda.
+- `white_player_id` wajib. `black_player_id` kosong pada bot dan pemain PvP yang menunggu matchmaking; jika kedua pemain terisi, ID keduanya harus berbeda.
+- Partial unique index mengizinkan paling banyak satu antrean PvP berstatus `waiting` untuk setiap `white_player_id`. Pada MVP, satu pengguna hanya boleh memiliki satu game PvP aktif (`waiting` atau `in_progress`); game baru dapat dimulai setelah game tersebut selesai.
 - Hasil kosong sebelum `completed` dan wajib terisi sesudahnya. Waktu mulai terisi ketika game dimulai; waktu selesai hanya terisi ketika game selesai.
 - Jam kedua pemain diinisialisasi dari preset. `turn_started_at` menjadi referensi server untuk jam yang sedang berjalan. Response mengirim `white_ms` dan `black_ms` sebagai integer JSON meskipun kolom PostgreSQL bertipe `BIGINT`. Saat game selesai, timestamp giliran dan tawaran remis dikosongkan.
 - `draw_offer_by_player_id` hanya boleh berupa salah satu ID pemain PvP; pada game bot nilainya harus `NULL`. `termination_reason` dapat berupa `checkmate`, `stalemate`, `dead_position`, `resignation`, `timeout`, `draw_agreement`, `threefold_repetition`, `fivefold_repetition`, `fifty_move_rule`, atau `seventy_five_move_rule`.
 - `ply > 0`; `color` hanya `w`/`b`; petak asal/tujuan harus berbentuk `[a-h][1-8]`; `promotion` hanya `q`/`r`/`b`/`n` atau `NULL`.
 - `actor_type = 'player'` memerlukan `player_id`; `actor_type = 'bot'` mengharuskan `player_id` kosong. Kecocokan ID pemain dengan warna dan mode bot diperiksa service game dalam transaksi.
-- Constraint FK dan CHECK ditegakkan di PostgreSQL. Indeks unik: `users.username`, `users.email`, (`game_id`, `ply`). Indeks query: (`white_player_id`, `created_at`), (`black_player_id`, `created_at`), dan (`mode`, `status`, `created_at`).
+- Constraint FK dan CHECK ditegakkan di PostgreSQL. Indeks unik: `users.username`, `users.email`, (`game_id`, `ply`), serta antrean PvP aktif per `white_player_id`. Indeks query: (`white_player_id`, `created_at`), (`black_player_id`, `created_at`), dan (`mode`, `status`, `created_at`).
 
 `game_moves` adalah sumber history dan PGN; `games.current_fen` menyimpan posisi terakhir. PGN dibentuk dari langkah terurut untuk response atau analisis. Detail ERD dan urutan transaksi ada di [DATABASE_SCHEMA.md](./DATABASE_SCHEMA.md).
 
@@ -106,12 +108,13 @@ MVP belum menyediakan logout yang mencabut token, refresh token, verifikasi emai
 
 ### Alur login, home, dan pemilihan mode
 
+Login tidak membuat game dan tidak menerima pilihan mode; pilihan mode dikirim setelah pengguna memilihnya di beranda.
+
 1. Pengguna login melalui `POST /api/auth/login`.
 2. Setelah menerima token, klien memanggil `GET /` dengan token untuk menampilkan beranda dan pilihan fitur.
 3. Dari beranda, pengguna memilih **PvP**. Mode **Melawan Bot** direncanakan untuk tahap berikutnya.
-4. Lobby PvP menampilkan tab **Room Terbuka** dari `GET /api/games/open`; pengguna dapat membuat room menunggu lawan atau bergabung ke room yang ditampilkan.
-6. Kedua pemain masuk ke room yang sama melalui Socket.IO `watch_game` setelah game berstatus `in_progress`. Pengguna lain dapat membuka daftar game PvP aktif dan menontonnya tanpa hak mengirim langkah.
-7. Login tidak membuat game dan tidak menerima pilihan mode; pilihan mode dikirim setelah pengguna memilihnya di beranda.
+4. Pengguna memilih kontrol waktu dan memanggil `POST /api/games` untuk random matchmaking. Backend memasangkan pemain dengan preset yang sama atau membuat antrean berstatus menunggu; pemain dapat membatalkan antrean.
+5. Setelah match, kedua pemain menerima event Socket.IO `game_started`, lalu subscribe ke game melalui `watch_game`. Pengguna lain dapat melihat daftar game PvP aktif dan menontonnya tanpa hak mengirim langkah.
 
 ## REST API
 
@@ -212,7 +215,7 @@ Pilih salah satu preset waktu berikut. Increment per langkah merupakan bagian pr
 | `rapid` | Reguler | 15 menit | 10 detik |
 | `professional` | Professional | 60 menit | 30 detik |
 
-Jam dihitung secara otoritatif oleh server. Pada PvP, pilihan pembuat room berlaku untuk kedua pemain.
+Jam dihitung secara otoritatif oleh server. Pemain PvP hanya dipasangkan dengan pemain lain yang memilih preset waktu yang sama. Jam mulai ketika backend menemukan pasangan.
 
 Body PvP:
 
@@ -220,11 +223,12 @@ Body PvP:
 { "mode": "pvp", "time_control": "blitz" }
 ```
 
-Response `201` membuat game menunggu lawan:
+Jika lawan belum tersedia, response `202` menempatkan pemain dalam antrean:
 
 ```json
 {
   "status": "success",
+  "matchmaking": { "status": "searching" },
   "game": {
     "id": "<uuid>",
     "mode": "pvp",
@@ -246,21 +250,37 @@ Body melawan bot (rancangan; belum didukung):
 
 Body bot tersebut ditolak pada implementasi saat ini. Setelah fitur bot dibuat, game direncanakan dimulai dengan pengguna sebagai putih dan Stockfish sebagai hitam; `difficulty` akan diwajibkan dan dipetakan di server.
 
-Klien menggunakan endpoint ini setelah pengguna memilih PvP dan preset waktu. Room menunggu lawan; jam putih dimulai saat pemain kedua bergabung.
+Jika pemain lain sudah menunggu dengan preset yang sama, response `200` mengembalikan game aktif dan warna hitam untuk pemain yang baru dipasangkan. Backend mengurutkan antrean dari yang paling lama dan memakai satu advisory transaction lock PostgreSQL untuk seluruh preset. Jika request diulang setelah match, backend mengembalikan game aktif yang sama beserta warna dan lawannya; retry tidak membuat game kedua atau menyiarkan ulang `game_started`. Pengguna hanya boleh memiliki satu game PvP aktif; memilih preset berbeda saat masih mengantre menghasilkan `409 MATCHMAKING_ALREADY_QUEUED`.
 
-Response game menyertakan `clocks`: sisa waktu putih/hitam dalam milidetik sebagai integer JSON, `active_color`, dan `as_of` (waktu server ketika nilai dihitung). Klien boleh menggerakkan countdown visual dari `as_of`, tetapi waktu server adalah sumber kebenaran. Server harus menyelesaikan game saat jam aktif habis meskipun tidak ada request baru.
-
-### Daftar game terbuka
-
-`GET /api/games/open` (**Auth**)
-
-Endpoint ini menjadi sumber data untuk tab **Room Terbuka** di lobby PvP. Response `200` berisi game PvP yang menunggu lawan, termasuk preset waktunya; jika belum ada room, `games` berupa array kosong:
+Contoh inti response `200` saat langsung mendapat lawan:
 
 ```json
 {
   "status": "success",
-  "games": [{ "id": "<uuid>", "white": "player1", "time_control": "blitz", "createdAt": "<datetime>" }]
+  "matchmaking": { "status": "matched" },
+  "game": {
+    "id": "<uuid>", "mode": "pvp", "status": "in_progress", "color": "b",
+    "time_control": { "id": "blitz", "initial_seconds": 180, "increment_seconds": 2 },
+    "clocks": { "white_ms": 180000, "black_ms": 180000, "active_color": "w", "as_of": "<datetime>" },
+    "opponent": "player1", "fen": "<starting-fen>"
+  }
 }
+```
+
+Pemain yang menunggu dapat mengetahui hasil match dengan mendengarkan event `game_started`. Setelah reconnect, gunakan `GET /api/games/:id` untuk membaca status terbaru. Jam putih dimulai ketika pasangan ditemukan.
+
+Response game menyertakan `clocks`: sisa waktu putih/hitam dalam milidetik sebagai integer JSON, `active_color`, dan `as_of` (waktu server ketika nilai dihitung). Klien boleh menggerakkan countdown visual dari `as_of`, tetapi waktu server adalah sumber kebenaran. Server harus menyelesaikan game saat jam aktif habis meskipun tidak ada request baru.
+
+### Batalkan matchmaking
+
+`DELETE /api/games/:id/matchmaking` (**Auth**)
+
+Pemain dapat membatalkan hanya antrean miliknya yang masih berstatus `waiting`. Pembatalan menggunakan advisory transaction lock matchmaking yang sama dengan pencarian lawan, sehingga pembatalan dan pencocokan tidak melewati satu sama lain. Jika pasangan sudah ditemukan, server mengembalikan `409 MATCH_ALREADY_FOUND`; game aktif tidak dihapus.
+
+Response `200`:
+
+```json
+{ "status": "success", "cancelled": true, "gameId": "<uuid>" }
 ```
 
 ### Daftar game PvP yang sedang berlangsung
@@ -278,29 +298,7 @@ Response `200`:
 }
 ```
 
-### Bergabung ke game PvP
-
-`POST /api/games/:id/join` (**Auth**)
-
-Pemain kedua bergabung sebagai hitam dan mewarisi preset waktu pembuat room. Pemilik game tidak dapat bergabung sebagai lawan untuk game-nya sendiri. Server harus mengklaim slot lawan secara atomik: hanya satu permintaan join yang berhasil; permintaan bersamaan berikutnya menerima `409` jika room sudah terisi.
-
-Response `200`:
-
-```json
-{
-  "status": "success",
-  "game": {
-    "id": "<uuid>",
-    "mode": "pvp",
-    "status": "in_progress",
-    "color": "b",
-    "fen": "<starting-fen>",
-    "time_control": { "id": "professional", "initial_seconds": 3600, "increment_seconds": 30 },
-    "clocks": { "white_ms": 3600000, "black_ms": 3600000, "active_color": "w", "as_of": "<datetime>" },
-    "opponent": "player1"
-  }
-}
-```
+Tidak ada endpoint untuk bergabung sebagai pemain ke game tertentu pada MVP. Pemain hanya dipasangkan melalui antrean; bergabung ke game aktif melalui `watch_game` hanya memberi akses menonton.
 
 ### Kirim langkah
 
@@ -429,21 +427,31 @@ Client emit `watch_game`:
 { "room_id": "<uuid>" }
 ```
 
-Untuk mode PvP berstatus `in_progress`, pengguna terautentikasi mana pun dapat subscribe, termasuk penonton yang bukan pemain. Untuk game bot atau room yang masih menunggu lawan, hanya pemain terkait yang dapat subscribe. Server memvalidasi akses, memasukkan socket ke room game, lalu mengirim `game_state` berisi `room_id`, FEN, PGN, nama pemain, status, hasil, preset waktu, dan snapshot jam bertanda `as_of`. Perubahan game disimpan lebih dahulu; setelah transaksi commit, server langsung menyiarkan `move` atau `game_over` kepada semua subscriber. Antrean hanya mengurutkan aksi pada game yang sama dan tidak menahan broadcast sampai ada respons klien atau menghentikan game lain. Snapshot subscribe dibaca dari state tersimpan agar klien yang reconnect pulih dari event yang terlewat. Subscribe hanya memberi hak baca; endpoint `POST /api/games/:id/moves` tetap menolak pengguna yang bukan pemain dengan `403`.
+Untuk mode PvP berstatus `in_progress`, pengguna terautentikasi mana pun dapat subscribe, termasuk penonton. Game yang masih dalam antrean tidak bisa di-subscribe. Saat matchmaking berhasil, server mengirim `game_started` secara privat ke koneksi Socket.IO milik kedua pemain; payload mencakup warna dan lawan. Setelah itu, klien memanggil `watch_game` untuk menerima `game_state` berisi `room_id`, FEN, PGN, nama pemain, status, hasil, preset waktu, dan snapshot jam bertanda `as_of`. Perubahan game disimpan lebih dahulu; setelah transaksi commit, server langsung menyiarkan `move` atau `game_over` kepada semua subscriber. Antrean hanya mengurutkan aksi pada game yang sama dan tidak menahan broadcast sampai ada respons klien atau menghentikan game lain. Snapshot subscribe dibaca dari state tersimpan agar klien yang reconnect pulih dari event yang terlewat. Subscribe hanya memberi hak baca; endpoint `POST /api/games/:id/moves` tetap menolak pengguna yang bukan pemain dengan `403`.
 
 ### Event server
 
 - `move`: setiap langkah legal dari putih, hitam, atau bot yang telah disimpan, beserta aktor, warna, FEN, PGN, jam, dan status terbaru; dikirim ke semua subscriber game.
 - `move` dan `game_state` menyertakan sisa jam server serta `active_color`; klien menghitung tampilan countdown lokal dari data tersebut.
 - `game_over`: status akhir, `termination_reason`, pemenang, hasil, PGN, dan jam final; dikirim ke pemain dan semua penonton yang subscribe.
+- `game_started`: dikirim privat kepada koneksi semua perangkat kedua pemain yang sedang online setelah matchmaking berhasil; menyertakan `room_id`, warna pemain, lawan, dan snapshot game. Jika event terlewat, baca status melalui `GET /api/games/:id`.
 - `draw_offer`: tawaran remis baru dari pemain.
 - `draw_response`: tawaran diterima atau ditolak.
 - `game_error`: kesalahan koneksi atau subscription Socket.IO, termasuk penolakan `watch_game`.
 - `game_state`: snapshot game setelah klien subscribe; jam menyertakan `as_of` supaya klien dapat menggambar countdown dari waktu server yang sama.
 
+Contoh `game_started` untuk pemain yang mendapat warna putih:
+
+```json
+{
+  "room_id": "<uuid>", "color": "w", "opponent": "player2",
+  "game": { "id": "<uuid>", "mode": "pvp", "status": "in_progress", "fen": "<starting-fen>" }
+}
+```
+
 Jika permintaan `watch_game` ditolak, server mengirim `game_error` dengan kode `GAME_NOT_FOUND` atau `WATCH_FORBIDDEN` dan pesan yang aman ditampilkan ke pengguna. Socket yang ditolak tidak bergabung ke room game.
 
-Klien penonton memanggil `GET /api/games/live`, lalu emit `watch_game` dengan ID game pilihan. Daftar ini hanya mencakup PvP yang sedang berjalan; game selesai atau room menunggu lawan tidak dapat dimasuki sebagai penonton. Penonton tidak dapat mengirim langkah atau mengubah game.
+Klien penonton memanggil `GET /api/games/live`, lalu emit `watch_game` dengan ID game pilihan. Daftar ini hanya mencakup PvP yang sedang berjalan; game selesai atau antrean matchmaking yang menunggu tidak dapat dimasuki sebagai penonton. Penonton tidak dapat mengirim langkah atau mengubah game.
 
 `game_state` menyertakan preset waktu, FEN/PGN, jam sisa, sisi yang sedang berjalan, dan tawaran remis tertunda. Klien dapat menghitung tampilan jam dari timestamp snapshot; server tetap memutuskan timeout. Jika koneksi putus atau server restart, klien subscribe ulang dan server menghitung waktu dari `turn_started_at` yang tersimpan.
 
@@ -488,7 +496,7 @@ Contoh penolakan subscribe:
 }
 ```
 
-REST tetap menjadi jalur utama untuk membuat game, bergabung, dan mengirim langkah. Socket.IO mengirim snapshot awal, pembaruan langkah, dan status akhir game kepada pemain serta penonton yang subscribe, tanpa polling.
+REST tetap menjadi jalur utama untuk meminta/membatalkan matchmaking dan mengirim langkah. Socket.IO memberi tahu pemain saat match ditemukan, lalu mengirim snapshot, pembaruan langkah, dan status akhir game kepada pemain serta penonton yang subscribe.
 
 Contoh event tawaran remis dan responsnya:
 

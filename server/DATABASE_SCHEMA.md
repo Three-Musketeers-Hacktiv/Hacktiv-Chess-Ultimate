@@ -1,12 +1,12 @@
 # Rancangan Skema Database MVP
 
-Dokumen ini adalah rancangan untuk direview sebelum implementasi migration dan model Sequelize. Database menggunakan PostgreSQL. UUID dibuat oleh Sequelize (`DataTypes.UUIDV4`); semua waktu disimpan sebagai `TIMESTAMPTZ`.
+Dokumen ini mendokumentasikan skema PostgreSQL yang digunakan backend dan migration Sequelize. UUID dibuat oleh Sequelize (`DataTypes.UUIDV4`); semua waktu disimpan sebagai `TIMESTAMPTZ`.
 
 ## Relasi
 
 ```text
 users 1 ─── * games (white_player_id)
-users 1 ─── * games (black_player_id, nullable untuk room menunggu dan bot)
+users 1 ─── * games (black_player_id, nullable saat matchmaking menunggu dan untuk bot)
 games 1 ─── * game_moves
 users 1 ─── * game_moves (player_id, nullable untuk langkah bot)
 ```
@@ -110,14 +110,16 @@ Constraint yang disarankan:
 - Preset waktu: `bullet` = 1 menit + 0 detik, `blitz` = 3 menit + 2 detik, `rapid` = 15 menit + 10 detik, `professional` = 60 menit + 30 detik. Simpan durasi dan increment sebagai menit/detik pada kolom di atas; nilai jam sisa dalam milidetik.
 - Pasangan durasi dan increment harus cocok persis: `(1,0)`, `(3,2)`, `(15,10)`, atau `(60,30)`; nilai silang tidak valid.
 - `bot_difficulty` wajib untuk mode bot dan harus kosong untuk PvP; nilai yang diterima `easy`, `medium`, atau `hard`. Pemetaan ke parameter Stockfish dilakukan di server, bukan diterima sebagai parameter engine mentah dari klien.
-- Untuk PvP, `black_player_id` kosong saat `waiting` dan terisi saat `in_progress` atau `completed`.
+- Untuk PvP, `black_player_id` kosong saat `waiting` dan terisi saat `in_progress` atau `completed`. Baris `waiting` adalah antrean matchmaking, bukan room publik untuk dipilih.
+- Partial unique index pada `games.white_player_id` dengan kondisi `mode = 'pvp' AND status = 'waiting'` membatasi satu antrean aktif per pemain.
+- Aturan MVP: satu pemain hanya boleh memiliki satu game PvP aktif, yaitu satu antrean `waiting` atau pertandingan `in_progress`. Aturan lintas kolom ini dijaga service dalam transaksi menggunakan advisory transaction lock global yang sama untuk semua preset; request ulang mengembalikan game aktif yang sama. Setelah game selesai, pemain dapat masuk antrean baru.
 - Untuk mode bot, `black_player_id` selalu kosong; identitas lawan berasal dari `mode = 'bot'`.
 - Pemain putih dan hitam tidak boleh memiliki ID yang sama.
 - `result` harus kosong sebelum `completed` dan wajib terisi setelah `completed`.
 - `started_at` terisi saat game mulai; `ended_at` hanya terisi setelah selesai.
 - Kedua jam diinisialisasi dari preset. `turn_started_at` disetel saat game mulai dan diperbarui setiap giliran; waktu dihitung memakai waktu UTC server. Pada langkah sah, kurangi waktu sisi yang bergerak, tambahkan increment preset, lalu mulai sisi lawan. Game selesai mengosongkan `turn_started_at` dan tawaran remis yang masih tertunda.
 - `draw_offer_by_player_id` hanya boleh berisi salah satu pemain PvP dan kosong ketika tidak ada tawaran yang menunggu; untuk mode bot wajib `NULL`.
-- Sisa jam tidak boleh negatif. `turn_started_at` kosong selama room menunggu atau setelah game selesai; hanya jam sisi aktif yang berkurang menurut waktu server.
+- Sisa jam tidak boleh negatif. `turn_started_at` kosong selama antrean matchmaking menunggu atau setelah game selesai; hanya jam sisi aktif yang berkurang menurut waktu server.
 - Tawaran remis hanya boleh merujuk ke salah satu pemain dalam game dan otomatis dihapus setelah dijawab, lawan melangkah, atau game selesai.
 - `termination_reason` dibatasi ke `checkmate`, `stalemate`, `dead_position`, `resignation`, `timeout`, `draw_agreement`, `threefold_repetition`, `fivefold_repetition`, `fifty_move_rule`, atau `seventy_five_move_rule`.
 
@@ -150,7 +152,7 @@ Constraint dan indeks:
 - `from_square` dan `to_square` harus cocok dengan pola petak catur `[a-h][1-8]`.
 - `actor_type = 'player'` mewajibkan `player_id`; `actor_type = 'bot'` mewajibkan `player_id IS NULL`.
 - Indeks pada (`white_player_id`, `created_at`) dan (`black_player_id`, `created_at`) untuk riwayat pemain.
-- Indeks pada (`mode`, `status`, `created_at`) untuk lobby dan `turn_started_at` untuk memeriksa timeout pada game aktif.
+- Indeks pada (`mode`, `status`, `created_at`) untuk matchmaking/daftar game aktif dan `turn_started_at` untuk memeriksa timeout pada game aktif; partial unique index menegakkan satu antrean PvP per pemain.
 - Unique (`game_id`, `ply`) juga menyediakan indeks untuk mengambil history dalam urutan langkah.
 
 `player_id` harus cocok dengan pemilik warna pada game; langkah bot hanya boleh terjadi pada game mode `bot` dan warna hitam. Karena aturan itu melibatkan beberapa tabel, validasi dilakukan service game di dalam transaksi.
@@ -170,7 +172,7 @@ Statistik menang-seri-kalah dihitung dari game berstatus `completed`. Tabel anal
 
 Jangan menahan transaksi database selama Stockfish berpikir. Waktu berpikir bot mengurangi jam hitam; batasi pencarian sesuai waktu bot yang tersisa, lalu validasi dan simpan langkah bot dalam transaksi berikutnya. Setelah restart, hitung elapsed time dari `turn_started_at`, proses timeout yang terlewat, lalu izinkan klien subscribe kembali.
 
-Join ke room PvP juga harus mengisi `black_player_id` dan mengubah status menjadi `in_progress` secara atomik agar hanya satu pemain dapat mengambil slot lawan.
+Matchmaking lebih dahulu mengambil advisory transaction lock global PostgreSQL, lalu memeriksa apakah pengguna sudah memiliki game PvP `in_progress` atau antrean `waiting`. Request ulang mengembalikan antrean/game yang sama; jika pemain masih menunggu dengan preset berbeda, request ditolak. Jika tidak ada aktivitas, matchmaking memilih antrean `waiting` tertua dengan kontrol waktu yang sama, mengunci baris kandidat, lalu mengisi `black_player_id` dan mengubah status menjadi `in_progress` dalam satu transaksi; jika tidak ada kandidat, antrean baru dibuat. Lock global yang sama mengurutkan pencarian dan pembatalan lintas request, preset, dan instance server. Jam dimulai pada timestamp request yang menemukan pasangan. Pembatalan mengambil lock sebelum membaca dan menghapus antrean milik pemain; jika game sudah dimulai, pembatalan ditolak. Game baru dapat dicari setelah game aktif selesai.
 
 ## Catatan Sequelize
 
