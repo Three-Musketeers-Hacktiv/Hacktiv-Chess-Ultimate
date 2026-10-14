@@ -2,6 +2,10 @@
 
 Dokumen ini mendefinisikan kontrak backend MVP berbasis Node.js dan Express. HTTP REST menangani pembuatan serta pengelolaan game; Socket.IO menyebarkan perubahan game secara real-time. Server menjadi sumber kebenaran untuk posisi papan dan validasi langkah.
 
+## Status implementasi
+
+Autentikasi, home, dan alur PvP yang didaftar di bawah sudah tersedia: membuat/list/join room, langkah legal, detail history, game aktif untuk penonton, resign, tawaran/klaim remis, jam server, dan Socket.IO. **Mode bot, daftar history lintas game, profil terpisah, serta analisis Stockfish masih rancangan dan belum tersedia.** Body `mode: "bot"` pada `POST /api/games` saat ini ditolak.
+
 ## Konvensi
 
 - Base URL development: `http://localhost:3000`
@@ -9,8 +13,8 @@ Dokumen ini mendefinisikan kontrak backend MVP berbasis Node.js dan Express. HTT
 - Endpoint bertanda **Auth** memerlukan header `Authorization: Bearer <token>`.
 - ID game dan pengguna berbentuk UUID.
 - **FEN** (*Forsyth–Edwards Notation*) merepresentasikan snapshot posisi papan pada satu saat, termasuk giliran yang harus jalan. API mengembalikan FEN terkini pada game dan FEN setelah langkah bila diperlukan.
-- **PGN** (*Portable Game Notation*) merepresentasikan urutan langkah game, misalnya `1. e4 e5 2. Nf3 Nc6`. History langkah terstruktur disimpan di database; backend membentuk PGN untuk response, ekspor, atau analisis Stockfish.
-- Backend menggunakan `chess.js` v1.4.0 untuk memvalidasi langkah pemain dan bot, menjaga posisi kanonis, serta membentuk FEN/PGN. Stockfish dijalankan di server hanya untuk memilih langkah bot dan menganalisis PGN; langkah bot divalidasi lagi dengan `chess.js` sebelum disimpan. Versi dependency dikunci di lockfile.
+- **PGN** (*Portable Game Notation*) merepresentasikan urutan langkah game, misalnya `1. e4 e5 2. Nf3 Nc6`. History langkah terstruktur disimpan di database; backend membentuk PGN dari langkah yang tersimpan.
+- Backend menggunakan `chess.js` v1.4.0 untuk memvalidasi langkah PvP, menjaga posisi kanonis, serta membentuk FEN/PGN. Integrasi Stockfish belum tersedia.
 - Registrasi dan login wajib sebelum membuat atau bergabung ke game PvP.
 
 ## Skema database
@@ -94,15 +98,18 @@ Satu baris mewakili satu langkah (half-move).
 3. Kirim JWT sebagai `Authorization: Bearer <token>` pada endpoint bertanda **Auth**.
 4. Untuk Socket.IO, kirim token yang sama pada `auth.token` saat membuka koneksi.
 
-Password disimpan sebagai hash bcrypt. Server tidak mengembalikan password atau hash. Token berlaku 7 hari. Token hilang, tidak valid, atau kedaluwarsa menghasilkan `401`.
+Password disimpan sebagai hash bcrypt. Server tidak mengembalikan password atau hash. `JWT_SECRET` wajib tersedia di environment server dengan panjang minimal 32 byte; token ditandatangani dengan HS256, berisi UUID pengguna pada claim `sub`, dan berlaku 7 hari. Token hilang, tidak valid, atau kedaluwarsa menghasilkan `401`. Login dengan email yang tidak terdaftar dan password salah mengembalikan pesan `401` yang sama.
+
+Register dibatasi 5 request dan login 10 request per alamat IP setiap 15 menit; pelanggaran menghasilkan `429` dan header `Retry-After`. Pembatas saat ini berada di memori proses, sehingga hanya sesuai satu instance dan akan reset saat server restart. Sebelum menjalankan beberapa instance, ganti penyimpanan limiter dengan store bersama. Password harus minimal 8 karakter dan maksimal 72 byte UTF-8 agar tidak terpotong oleh bcrypt.
+
+MVP belum menyediakan logout yang mencabut token, refresh token, verifikasi email, atau pemulihan password. Token yang sudah diterbitkan tetap berlaku sampai kedaluwarsa.
 
 ### Alur login, home, dan pemilihan mode
 
 1. Pengguna login melalui `POST /api/auth/login`.
 2. Setelah menerima token, klien memanggil `GET /` dengan token untuk menampilkan beranda dan pilihan fitur.
-3. Dari beranda, pengguna memilih **PvP** atau **Melawan Bot**.
-4. Untuk bot, klien membuat game dengan `POST /api/games` dan body `{ "mode": "bot" }`.
-5. Untuk PvP, lobby menampilkan tab **Room Terbuka** dari `GET /api/games/open`; pengguna dapat membuat room menunggu lawan atau bergabung ke room yang ditampilkan.
+3. Dari beranda, pengguna memilih **PvP**. Mode **Melawan Bot** direncanakan untuk tahap berikutnya.
+4. Lobby PvP menampilkan tab **Room Terbuka** dari `GET /api/games/open`; pengguna dapat membuat room menunggu lawan atau bergabung ke room yang ditampilkan.
 6. Kedua pemain masuk ke room yang sama melalui Socket.IO `watch_game` setelah game berstatus `in_progress`. Pengguna lain dapat membuka daftar game PvP aktif dan menontonnya tanpa hak mengirim langkah.
 7. Login tidak membuat game dan tidak menerima pilihan mode; pilihan mode dikirim setelah pengguna memilihnya di beranda.
 
@@ -134,11 +141,11 @@ Response `200`:
     "stats": { "wins": 4, "draws": 1, "losses": 2 },
     "game_modes": [
       { "id": "pvp", "label": "PvP", "status": "available" },
-      { "id": "bot", "label": "Melawan Bot", "status": "available" }
+      { "id": "bot", "label": "Melawan Bot", "status": "planned" }
     ],
     "features": [
-      { "id": "history", "label": "Riwayat Permainan", "status": "available" },
-      { "id": "analysis", "label": "Analisis Permainan", "status": "available" },
+      { "id": "history", "label": "Riwayat Permainan", "status": "planned" },
+      { "id": "analysis", "label": "Analisis Permainan", "status": "planned" },
       { "id": "daily_puzzle", "label": "Puzzle Harian", "status": "planned" },
       { "id": "tournaments", "label": "Turnamen", "status": "planned" }
     ]
@@ -146,7 +153,7 @@ Response `200`:
 }
 ```
 
-Frontend hanya memulai game setelah pengguna memilih mode dan memanggil `POST /api/games`.
+Frontend hanya memulai PvP setelah pengguna memilih mode dan memanggil `POST /api/games`. Mode bot belum tersedia.
 
 ### Registrasi
 
@@ -168,7 +175,7 @@ Response `201`:
 { "status": "success", "message": "Akun berhasil dibuat. Silakan login." }
 ```
 
-Username harus 3–24 karakter dan hanya berisi huruf, angka, `_`, atau `-`. Email harus valid; password minimal 8 karakter. Email atau username yang sudah dipakai menghasilkan `409`.
+Username harus 3–24 karakter dan hanya berisi huruf ASCII, angka, `_`, atau `-`; email dinormalisasi ke huruf kecil dan harus valid. Password minimal 8 karakter dan maksimal 72 byte UTF-8. Email atau username yang sudah dipakai menghasilkan `409`; input tidak valid menghasilkan `400`.
 
 ### Login
 
@@ -231,15 +238,15 @@ Response `201` membuat game menunggu lawan:
 }
 ```
 
-Body melawan bot:
+Body melawan bot (rancangan; belum didukung):
 
 ```json
 { "mode": "bot", "time_control": "rapid", "difficulty": "medium" }
 ```
 
-Game bot dimulai dengan pengguna sebagai putih dan Stockfish sebagai hitam. `difficulty` wajib pada mode bot (`easy`, `medium`, atau `hard`) dan ditolak untuk PvP. Pemetaan ke parameter Stockfish ditentukan server.
+Body bot tersebut ditolak pada implementasi saat ini. Setelah fitur bot dibuat, game direncanakan dimulai dengan pengguna sebagai putih dan Stockfish sebagai hitam; `difficulty` akan diwajibkan dan dipetakan di server.
 
-Klien menggunakan endpoint ini setelah pengguna memilih mode dan preset waktu. Untuk PvP, game menunggu lawan; jam dimulai setelah lawan bergabung. Untuk bot, game langsung dimulai dan jam putih berjalan.
+Klien menggunakan endpoint ini setelah pengguna memilih PvP dan preset waktu. Room menunggu lawan; jam putih dimulai saat pemain kedua bergabung.
 
 Response game menyertakan `clocks`: sisa waktu putih/hitam dalam milidetik sebagai integer JSON, `active_color`, dan `as_of` (waktu server ketika nilai dihitung). Klien boleh menggerakkan countdown visual dari `as_of`, tetapi waktu server adalah sumber kebenaran. Server harus menyelesaikan game saat jam aktif habis meskipun tidak ada request baru.
 
@@ -357,7 +364,7 @@ Game berakhir otomatis pada checkmate, stalemate, dead position yang dikenali, f
 
 ### Riwayat game pengguna
 
-`GET /api/games` (**Auth**)
+`GET /api/games` (**Auth**, belum tersedia)
 
 Response `200` berisi hingga 100 game milik pengguna, termasuk mode, status, hasil, preset waktu, tingkat bot bila ada, lawan, termination reason, dan waktu pembaruan.
 
@@ -369,13 +376,13 @@ Hanya pemain game yang dapat melihat detail. Response memuat FEN terakhir, PGN, 
 
 ### Profil dan statistik
 
-`GET /api/profile/me` (**Auth**)
+`GET /api/profile/me` (**Auth**, belum tersedia)
 
 Response memuat ID, username, statistik menang/seri/kalah, dan hingga 50 game selesai beserta PGN.
 
 ### Analisis pascapertandingan
 
-`POST /api/game/analyze` (**Auth**)
+`POST /api/game/analyze` (**Auth**, belum tersedia)
 
 Body:
 

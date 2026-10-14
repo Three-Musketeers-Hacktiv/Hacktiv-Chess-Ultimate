@@ -1,10 +1,10 @@
 # Hacktiv Chess Backend
 
-Backend untuk MVP game catur online. API dirancang menggunakan Node.js dan Express, dengan PostgreSQL/Sequelize untuk penyimpanan, Socket.IO untuk pembaruan PvP real-time, `chess.js` v1.4.0 untuk aturan dan validasi langkah, serta Stockfish untuk langkah bot dan analisis permainan.
+Backend MVP catur online dengan Node.js/Express, PostgreSQL/Sequelize, Socket.IO, dan `chess.js` v1.4.0. Alur PvP sudah tersedia; integrasi Stockfish untuk bot dan analisis direncanakan pada tahap berikutnya.
 
 ## Menjalankan fondasi server
 
-Gunakan Node.js dan PostgreSQL. Salin `.env.example` menjadi `.env`, lalu isi password PostgreSQL untuk development dan testing. File `.env` tidak boleh di-commit.
+Gunakan Node.js dan PostgreSQL. Salin `.env.example` menjadi `.env`, lalu isi password PostgreSQL untuk development dan testing serta ganti `JWT_SECRET` dengan nilai acak yang panjang. File `.env` tidak boleh di-commit.
 
 ```powershell
 Copy-Item .env.example .env
@@ -15,44 +15,52 @@ npm run db:migrate:testing
 npm run dev
 ```
 
+Jalankan `npm test` setelah database testing dimigrasikan untuk memeriksa autentikasi dan alur PvP dasar.
+
 Server memakai database `hacktiv_chess_development` untuk `NODE_ENV=development`, `hacktiv_chess_testing` untuk `NODE_ENV=test`, dan `hacktiv_chess_production` untuk `NODE_ENV=production`. Untuk testing, jalankan `npm run db:migrate:testing` setelah membuat database testing. Isi host, nama database, user, dan password production sebelum menjalankan `npm run db:create:production` dan `npm run db:migrate:production`. Migration awal membuat tabel `users`, `games`, dan `game_moves` beserta constraint dan indeks skema. Endpoint `GET /health` menjadi health check API.
 
 Command `npm start` menjalankan entry point yang sama tanpa mode watch. Sequelize CLI memakai konfigurasi, model, dan migration di dalam `src/`; migration awal membuat tabel `users`, `games`, dan `game_moves`.
 
-## Alur pengguna
+Untuk register dan login, backend menggunakan bcrypt dan JWT. Ganti `JWT_SECRET` di `.env` dengan secret acak sebelum menggunakan endpoint login. Login berlaku 7 hari; request ke `GET /` memerlukan header `Authorization: Bearer <token>`.
+
+MVP belum memiliki logout yang mencabut token, refresh token, verifikasi email, atau pemulihan password. Rate limit autentikasi tersimpan di memori satu proses.
+
+## Alur pengguna yang tersedia
 
 1. Pengguna membuat akun melalui `POST /api/auth/register`.
 2. Pengguna login melalui `POST /api/auth/login` dan menerima JWT.
-3. Klien memanggil `GET /` dengan JWT untuk menampilkan home dan pilihan fitur.
-4. Pengguna memilih PvP atau melawan bot. Untuk PvP, lobby menyediakan tab **Room Terbuka** dari `GET /api/games/open` serta opsi membuat room melalui `POST /api/games`.
-5. Pemain kedua bergabung melalui `POST /api/games/:id/join`. Kedua klien berlangganan room yang sama melalui Socket.IO `watch_game`. Pengguna lain dapat melihat daftar game aktif melalui `GET /api/games/live` dan menonton update tanpa dapat mengirim langkah.
-6. Backend mencatat waktu penerimaan langkah, mengurutkan langkah dan timeout per game, memvalidasi serta menyimpan langkah, lalu langsung menyiarkan FEN/PGN dan jam terbaru melalui Socket.IO. Saat `watch_game`, server mengirim snapshot dari data tersimpan. Event `move` dan `game_over` dikirim setelah commit agar pemain dan penonton menerima keadaan terbaru.
+3. Klien memanggil `GET /` dengan JWT untuk menampilkan home. Mode PvP tersedia; mode bot berstatus `planned`.
+4. Pemain membuat room PvP dengan preset waktu, lalu lobby memuat room menunggu lawan dari `GET /api/games/open`.
+5. Pemain kedua bergabung melalui `POST /api/games/:id/join`. Kedua pemain dan penonton terautentikasi dapat berlangganan melalui Socket.IO `watch_game`; `GET /api/games/live` menyediakan daftar game PvP aktif untuk ditonton.
+6. Langkah legal disimpan beserta FEN dan notasi. Perubahan disiarkan lewat Socket.IO setelah transaksi berhasil. Jam berjalan di server; scheduler memeriksa timeout setiap detik dan aktif kembali setelah server restart.
 
-## Cakupan MVP
+## Implementasi saat ini: PvP
 
 - Registrasi dan login dengan autentikasi JWT.
-- Home terautentikasi dengan pilihan mode PvP/bot dan daftar fitur.
-- Lobby PvP dengan tab **Room Terbuka** untuk melihat dan bergabung ke game yang menunggu lawan, serta tab **Sedang Berlangsung** untuk menonton game PvP aktif.
-- Game PvP dan melawan bot Stockfish. Backend menggunakan `chess.js` untuk validasi langkah pemain maupun bot; Stockfish memilih langkah bot dan menganalisis PGN.
-- Preset waktu untuk kedua mode: Sangat Cepat 1+0, Cepat 3+2, Reguler 15+10, Professional 60+30 (menit awal + detik increment per langkah). Jam otoritatif berada di server.
-- Bot menyediakan tingkat mudah, sedang, dan sulit.
-- Game berakhir berdasarkan aturan catur yang dicakup MVP, timeout, menyerah, tawaran remis yang diterima, atau klaim remis yang valid. Klaim tiga kali pengulangan dan 50 langkah hanya berlaku untuk posisi saat ini; klaim berdasarkan langkah yang diniatkan tidak termasuk MVP.
-- Aturan remis dibuat praktis untuk MVP, bukan implementasi menyeluruh FIDE atau salinan persis Chess.com. Dead position hanya dikenali bila `chess.js` `isInsufficientMaterial()` mengembalikan `true`. Saat timeout, hasil remis hanya jika pemeriksaan yang sama mengembalikan `true` untuk seluruh posisi; selain itu pemain yang kehabisan waktu kalah. Resign saat game aktif langsung memberi kemenangan kepada lawan.
-- Backend menghitung fivefold repetition dan aturan otomatis 75 langkah dari riwayat lengkap; kunci posisi mempertimbangkan susunan bidak, giliran, hak rokade, dan kemungkinan en passant yang legal.
-- Tingkat bot memakai Stockfish Skill Level 0 (mudah), 5 (sedang), dan 10 (sulit); ini tingkat relatif, bukan janji rating Elo.
-- Maksimal dua proses Stockfish aktif, masing-masing satu thread, ditambah maksimal lima pekerjaan menunggu dalam antrean bersama; bot diprioritaskan. Pencarian langkah bot maksimal 1 detik dan analisis PGN maksimal 5 detik. Jika kapasitas penuh, request langkah bot atau analisis baru mendapat `503 ENGINE_BUSY`; langkah pemain belum disimpan. Reservasi slot dilepas jika validasi atau transaksi langkah gagal.
-- Menonton game PvP aktif sebagai pengguna terautentikasi dengan akses baca saja.
-- Melihat langkah kedua pemain secara real-time melalui Socket.IO setelah subscribe dengan `watch_game`.
-- Validasi langkah dan status game di backend.
-- Riwayat pertandingan serta statistik menang/seri/kalah.
-- Analisis PGN pascapertandingan menggunakan Stockfish.
+- Register/login JWT dan home terautentikasi; PvP tersedia dan bot berstatus `planned`.
+- Membuat room PvP dengan preset Bullet 1+0, Blitz 3+2, Rapid 15+10, atau Professional 60+30.
+- Melihat room terbuka, join sebagai hitam, serta mengunci slot join agar tidak diambil dua pemain.
+- Validasi langkah dengan `chess.js`; menyimpan history/FEN, membentuk PGN, dan mengurutkan aksi per game pada satu proses.
+- Menampilkan detail dan history pemain, daftar PvP aktif, serta snapshot baca-saja untuk penonton.
+- Menyiarkan `game_state`, `move`, dan `game_over` lewat Socket.IO setelah perubahan tersimpan.
+- Jam server dengan increment; timeout diperiksa saat aksi masuk dan oleh scheduler setiap detik, termasuk setelah server restart.
+- Game berakhir pada checkmate, stalemate, insufficient material, fivefold repetition, aturan 75 langkah, timeout, menyerah, atau remis yang disetujui.
+- Tawaran remis tersedia setelah kedua pemain melangkah. Klaim tiga kali pengulangan dan 50 langkah berlaku untuk posisi saat ini; klaim gagal menambah dua menit ke jam lawan.
+- Aturan remis dibuat praktis untuk MVP, bukan implementasi penuh FIDE atau salinan persis Chess.com.
+
+## Belum diimplementasikan
+
+- Game melawan Stockfish, tingkat kesulitan bot, dan analisis PGN.
+- Daftar riwayat lintas game (`GET /api/games`), profil/statistik terpisah, rating, pembukaan favorit, dan grafik perkembangan.
+- Puzzle, turnamen, teman/chat/klub, gamifikasi, dan antarmuka frontend.
+- Antrean game dan rate limit berbasis memori hanya sesuai satu instance; deployment beberapa instance perlu store dan pengurutan bersama.
 
 Puzzle harian dan fitur lain dapat ditambahkan setelah sumber kontennya disepakati.
 
 ## Istilah posisi dan riwayat
 
 - **FEN** (*Forsyth–Edwards Notation*) menggambarkan posisi papan pada satu saat, termasuk giliran yang harus jalan. Backend memakai FEN untuk posisi game terkini dan posisi setelah setiap langkah.
-- **PGN** (*Portable Game Notation*) merekam urutan langkah, misalnya `1. e4 e5 2. Nf3 Nc6`. Backend dapat membentuk PGN dari history langkah untuk analisis Stockfish atau ekspor.
+- **PGN** (*Portable Game Notation*) merekam urutan langkah, misalnya `1. e4 e5 2. Nf3 Nc6`. Backend membentuk PGN dari history; analisis Stockfish belum tersedia.
 - Singkatnya, FEN adalah snapshot posisi; PGN adalah rekaman langkah. History terstruktur disimpan di `game_moves`.
 
 ## Skema database
@@ -136,8 +144,8 @@ History `game_moves` menjadi sumber PGN; PGN dibentuk saat dibutuhkan. `games.cu
 - [Rancangan skema database PostgreSQL](./DATABASE_SCHEMA.md)
 - [Instruksi untuk pengembangan backend](./AGENTS.md)
 
-## Status fondasi
+## Status implementasi
 
-Fondasi server sudah tersedia: Express dan Socket.IO, konfigurasi Sequelize untuk development/testing/production, model `User`, `Game`, dan `GameMove`, serta tiga migration awal. Endpoint runtime yang tersedia saat ini hanya `GET /health`; autentikasi, game, lobby, bot Stockfish, dan endpoint lain di dokumen API belum diimplementasikan. Server dapat dijalankan setelah PostgreSQL tersedia dan database development berhasil dimigrasikan.
+Fondasi server dan alur PvP tersedia: Express/Socket.IO, Sequelize/PostgreSQL, tiga model/migration, autentikasi, room/join, langkah legal, history/detail, menonton game aktif, jam, dan akhir game sesuai cakupan di atas. Bot Stockfish dan analisis belum tersedia. Kontrak endpoint dan event ada di [API.md](./API.md).
 
-Untuk deployment production, isi kredensial database production di environment variables platform. Secret JWT dan path executable Stockfish akan diperlukan saat fitur terkait dibuat. Jangan commit `.env` atau secret.
+Rate limit register/login saat ini disimpan di memori proses, sesuai satu instance MVP; gunakan penyimpanan bersama sebelum menjalankan beberapa instance. Untuk deployment production, isi kredensial database dan `JWT_SECRET` di environment variables platform. Jangan commit `.env` atau secret.
