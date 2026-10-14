@@ -4,6 +4,7 @@
   "description": "Backend untuk MVP game catur online. API dirancang menggunakan Node.js dan Express, dengan PostgreSQL/Sequelize untuk penyimpanan, Socket.IO untuk pembaruan PvP real-time, `chess.js` v1.4.0 untuk aturan dan validasi langkah, serta Stockfish untuk langkah bot dan analisis permainan.",
   "main": "index.js",
   "scripts": {
+    "postinstall": "node scripts/install-stockfish.js",
     "start": "node index.js",
     "dev": "node --watch index.js",
     "db:create": "sequelize-cli db:create --env development",

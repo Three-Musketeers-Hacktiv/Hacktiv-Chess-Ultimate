@@ -4,7 +4,7 @@ Backend MVP catur online dengan Node.js/Express, PostgreSQL/Sequelize, Socket.IO
 
 ## Menjalankan fondasi server
 
-Gunakan Node.js dan PostgreSQL. Salin `.env.example` menjadi `.env`, isi password PostgreSQL untuk development dan testing, ganti `JWT_SECRET` dengan nilai acak yang panjang, dan atur `STOCKFISH_PATH` ke binary Stockfish lokal. File `.env` tidak boleh di-commit.
+Gunakan Node.js dan PostgreSQL. Salin `.env.example` menjadi `.env`, isi password PostgreSQL untuk development dan testing, ganti `JWT_SECRET` dengan nilai acak yang panjang, dan atur `STOCKFISH_PATH` ke binary Stockfish lokal. Pada Linux x64, `npm install` mengunduh Stockfish 19 resmi ke `.stockfish/stockfish`; Windows/macOS melewati unduhan sehingga gunakan binary lokal jika ingin menjalankan bot. File `.env` tidak boleh di-commit.
 
 ```powershell
 Copy-Item .env.example .env
@@ -20,6 +20,8 @@ Jalankan `npm test` setelah database testing dimigrasikan untuk memeriksa autent
 Server memakai database `hacktiv_chess_development` untuk `NODE_ENV=development`, `hacktiv_chess_testing` untuk `NODE_ENV=test`, dan `hacktiv_chess_production` untuk `NODE_ENV=production`. Untuk testing, jalankan `npm run db:migrate:testing` setelah membuat database testing. Isi host, nama database, user, dan password production sebelum menjalankan `npm run db:create:production` dan `npm run db:migrate:production`. Migration membuat tabel `users`, `games`, `game_moves`, dan `revoked_tokens` beserta constraint dan indeks skema. Endpoint `GET /health` menjadi health check API.
 
 Command `npm start` menjalankan entry point yang sama tanpa mode watch. Sequelize CLI memakai konfigurasi, model, dan migration di dalam `src/`; migration awal membuat tabel `users`, `games`, dan `game_moves`.
+
+Untuk Railway, atur root directory service ke `server`, set `STOCKFISH_PATH=./.stockfish/stockfish`, dan deploy. Script `postinstall` mengunduh arsip Stockfish 19 resmi untuk Linux x64, memverifikasi SHA-256 dari metadata rilis GitHub, lalu menyiapkan executable. Deploy perlu akses jaringan saat build; platform Linux selain x64 saat ini tidak didukung script ini.
 
 Untuk register dan login, backend menggunakan bcrypt dan JWT. Ganti `JWT_SECRET` di `.env` dengan secret acak sebelum menggunakan endpoint login. Login berlaku 7 hari; request ke `GET /` memerlukan header `Authorization: Bearer <token>`.
 

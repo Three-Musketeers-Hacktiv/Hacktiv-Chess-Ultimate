@@ -1,4 +1,5 @@
 node_modules
+.stockfish/
 
 # Local environment variables and secrets
 .env
