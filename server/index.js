@@ -90,6 +90,6 @@ process.once("SIGINT", stopServer);
 process.once("SIGTERM", stopServer);
 
 startServer().catch((error) => {
-  console.error(`Unable to start server: ${error.message}`);
+  console.error("Unable to start server:", error?.stack || error);
   process.exitCode = 1;
 });
