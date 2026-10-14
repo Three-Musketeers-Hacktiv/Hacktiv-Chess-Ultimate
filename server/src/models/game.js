@@ -36,6 +36,11 @@ module.exports = (sequelize, DataTypes) => {
       termination_reason: { type: DataTypes.STRING(32), allowNull: true },
       started_at: { type: DataTypes.DATE, allowNull: true },
       ended_at: { type: DataTypes.DATE, allowNull: true },
+      is_ranked: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+      white_elo_before: { type: DataTypes.INTEGER, allowNull: true },
+      black_elo_before: { type: DataTypes.INTEGER, allowNull: true },
+      white_elo_change: { type: DataTypes.INTEGER, allowNull: true },
+      black_elo_change: { type: DataTypes.INTEGER, allowNull: true },
     },
     {
       sequelize,

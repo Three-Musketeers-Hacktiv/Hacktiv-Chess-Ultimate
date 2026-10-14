@@ -4,6 +4,7 @@ const { Op, Transaction, UniqueConstraintError } = require("sequelize");
 const { Game, GameMove, User, sequelize } = require("../models");
 const { enqueueGameAction } = require("./game-queue.service");
 const stockfish = require("./stockfish.service");
+const { MATCHMAKING_RANGE, calculateEloChanges } = require("../utils/elo");
 
 const START_FEN = new Chess().fen();
 const MATCHMAKING_LOCK_KEY = "pvp:matchmaking";
@@ -89,12 +90,31 @@ function isPlayer(game, userId) {
   return null;
 }
 
+/**
+ * Ratings of a ranked game: `{ white|black: { before, after, change } }`. `after`/`change` stay `null`
+ * until the game is completed and the rating movement has been booked. `null` for casual/bot games and
+ * for a ranked room that is still waiting for its second player.
+ */
+function eloSummary(game) {
+  if (!game.is_ranked || game.white_elo_before == null || game.black_elo_before == null) return null;
+  const booked = game.white_elo_change != null && game.black_elo_change != null;
+  const side = (before, change) => ({
+    before, change: booked ? change : null, after: booked ? before + change : null,
+  });
+  return {
+    white: side(game.white_elo_before, game.white_elo_change),
+    black: side(game.black_elo_before, game.black_elo_change),
+  };
+}
+
 function publicGame(game, color = null, opponent = null, asOf = new Date()) {
   const totalMs = game.time_control_minutes * 60_000;
   const initialSeconds = totalMs / 1000;
   return {
     id: game.id,
     mode: game.mode,
+    ranked: Boolean(game.is_ranked),
+    elo: eloSummary(game),
     status: game.status,
     color,
     fen: game.current_fen,
@@ -124,7 +144,34 @@ async function finishGame(game, { result, reason, endedAt }, transaction) {
   game.ended_at = endedAt;
   game.turn_started_at = null;
   game.draw_offer_by_player_id = null;
+  await applyElo(game, transaction);
   await game.save({ transaction });
+}
+
+/**
+ * Books the Elo movement of a finished ranked PvP game (K = 32) onto both players and onto the game row.
+ * Runs inside the transaction that completes the game, so ratings and result can never disagree; the games
+ * of one user are serialised (one active PvP game per user), so each rating is read from the game snapshot
+ * and applied as an increment.
+ */
+async function applyElo(game, transaction) {
+  if (!game.is_ranked || game.mode !== "pvp" || !game.black_player_id) return;
+  const ratings = await User.findAll({
+    where: { id: { [Op.in]: [game.white_player_id, game.black_player_id] } },
+    attributes: ["id", "elo_rating"], transaction,
+  });
+  const current = (id) => ratings.find((row) => row.id === id)?.elo_rating;
+  const whiteBefore = game.white_elo_before ?? current(game.white_player_id);
+  const blackBefore = game.black_elo_before ?? current(game.black_player_id);
+  const changes = calculateEloChanges(whiteBefore, blackBefore, game.result);
+  game.white_elo_before = whiteBefore;
+  game.black_elo_before = blackBefore;
+  game.white_elo_change = changes.white.change;
+  game.black_elo_change = changes.black.change;
+  await Promise.all([
+    User.increment("elo_rating", { by: changes.white.change, where: { id: game.white_player_id }, transaction }),
+    User.increment("elo_rating", { by: changes.black.change, where: { id: game.black_player_id }, transaction }),
+  ]);
 }
 
 async function finishForPosition(game, chess, history, color, endedAt, transaction) {
@@ -166,7 +213,19 @@ async function timeoutIfExpired(game, receivedAt, transaction) {
   return true;
 }
 
-async function createRoom(userId, body, receivedAt = new Date()) {
+const queueMatches = (queued, preset, ranked) =>
+  queued.time_control_minutes === preset.minutes && queued.increment_seconds === preset.increment &&
+  Boolean(queued.is_ranked) === ranked;
+const failQueueConflict = () => fail(
+  409, "MATCHMAKING_ALREADY_QUEUED", "Batalkan antrean aktif sebelum memilih mode atau kontrol waktu lain.",
+);
+
+/**
+ * Creates a game: a bot game starts at once, a PvP game pairs with a waiting room or queues.
+ * `options.ranked` (only reachable through `joinMatchmaking`) makes the PvP game rated: the queue is then
+ * restricted to rooms of other ranked players within MATCHMAKING_RANGE Elo points.
+ */
+async function createRoom(userId, body, receivedAt = new Date(), { ranked = false } = {}) {
   if (!body || !["pvp", "bot"].includes(body.mode)) fail(400, "INVALID_GAME", "mode harus pvp atau bot.");
   if (body.mode === "pvp" && body.difficulty !== undefined) fail(400, "INVALID_GAME", "Game PvP tidak menerima difficulty.");
   if (body.mode === "bot" && !["easy", "medium", "hard"].includes(body.difficulty)) {
@@ -177,9 +236,10 @@ async function createRoom(userId, body, receivedAt = new Date()) {
   if (body.mode === "bot" && !stockfish.isAvailable()) {
     fail(503, "ENGINE_UNAVAILABLE", "Stockfish belum tersedia. Periksa konfigurasi STOCKFISH_PATH.");
   }
-  const user = await User.findByPk(userId, { attributes: ["id", "username"] });
+  const user = await User.findByPk(userId, { attributes: ["id", "username", "elo_rating"] });
   if (!user) fail(401, "ACCOUNT_NOT_FOUND", "Akun tidak ditemukan.");
   const ms = preset.minutes * 60_000;
+  const isRanked = ranked && body.mode === "pvp";
   if (body.mode === "bot") {
     const game = await Game.create({
       id: randomUUID(), mode: "bot", status: "in_progress",
@@ -223,9 +283,7 @@ async function createRoom(userId, body, receivedAt = new Date()) {
         transaction, lock: transaction.LOCK.UPDATE,
       });
       if (ownQueue) {
-        if (ownQueue.time_control_minutes !== preset.minutes || ownQueue.increment_seconds !== preset.increment) {
-          fail(409, "MATCHMAKING_ALREADY_QUEUED", "Batalkan antrean aktif sebelum memilih kontrol waktu lain.");
-        }
+        if (!queueMatches(ownQueue, preset, isRanked)) failQueueConflict();
         return { game: publicGame(ownQueue, "w", null, receivedAt), matched: false };
       }
 
@@ -234,6 +292,11 @@ async function createRoom(userId, body, receivedAt = new Date()) {
           mode: "pvp", status: "waiting", black_player_id: null,
           white_player_id: { [Op.ne]: userId },
           time_control_minutes: preset.minutes, increment_seconds: preset.increment,
+          is_ranked: isRanked,
+          // Ranked: only a rival of similar strength (the room stores its owner's rating at queue time).
+          ...(isRanked && {
+            white_elo_before: { [Op.between]: [user.elo_rating - MATCHMAKING_RANGE, user.elo_rating + MATCHMAKING_RANGE] },
+          }),
         },
         order: [["created_at", "ASC"]], transaction, lock: transaction.LOCK.UPDATE,
       });
@@ -241,6 +304,7 @@ async function createRoom(userId, body, receivedAt = new Date()) {
       if (opponentGame) {
         const matchedAt = new Date();
         opponentGame.black_player_id = userId;
+        if (isRanked) opponentGame.black_elo_before = user.elo_rating;
         opponentGame.status = "in_progress";
         opponentGame.started_at = matchedAt;
         opponentGame.turn_started_at = matchedAt;
@@ -259,6 +323,7 @@ async function createRoom(userId, body, receivedAt = new Date()) {
         bot_difficulty: null, white_player_id: userId, black_player_id: null,
         current_fen: START_FEN, white_time_remaining_ms: ms, black_time_remaining_ms: ms,
         turn_started_at: null, started_at: null,
+        is_ranked: isRanked, white_elo_before: isRanked ? user.elo_rating : null,
       }, { transaction });
       return { game: publicGame(game, "w", null, receivedAt), matched: false, white: user.username };
     });
@@ -266,11 +331,20 @@ async function createRoom(userId, body, receivedAt = new Date()) {
     if (!(error instanceof UniqueConstraintError)) throw error;
     const ownQueue = await Game.findOne({ where: { mode: "pvp", status: "waiting", white_player_id: userId } });
     if (!ownQueue) throw error;
-    if (ownQueue.time_control_minutes !== preset.minutes || ownQueue.increment_seconds !== preset.increment) {
-      fail(409, "MATCHMAKING_ALREADY_QUEUED", "Batalkan antrean aktif sebelum memilih kontrol waktu lain.");
-    }
+    if (!queueMatches(ownQueue, preset, isRanked)) failQueueConflict();
     return { game: publicGame(ownQueue, "w", null, receivedAt), matched: false };
   }
+}
+
+/**
+ * `POST /api/matchmaking/join` — `mode: "ranked"` pairs by rating (±MATCHMAKING_RANGE Elo) and rates the
+ * game, `mode: "casual"` is the classic unrated random pairing.
+ */
+async function joinMatchmaking(userId, body, receivedAt = new Date()) {
+  if (!body || !["ranked", "casual"].includes(body.mode)) {
+    fail(400, "INVALID_MATCHMAKING_MODE", "mode harus ranked atau casual.");
+  }
+  return createRoom(userId, { mode: "pvp", time_control: body.time_control }, receivedAt, { ranked: body.mode === "ranked" });
 }
 
 async function cancelMatchmaking(userId, gameId) {
@@ -286,6 +360,74 @@ async function cancelMatchmaking(userId, gameId) {
     }
     await game.destroy({ transaction });
     return { cancelled: true, gameId };
+  });
+}
+
+/** Who may ask for a rematch of `gameId` and who must agree: players of a *finished PvP* game only. */
+async function getRematchContext(userId, gameId) {
+  const game = await Game.findByPk(gameId, {
+    include: [
+      { model: User, as: "whitePlayer", attributes: ["id", "username"] },
+      { model: User, as: "blackPlayer", attributes: ["id", "username"] },
+    ],
+  });
+  if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
+  const color = isPlayer(game, userId);
+  if (!color) fail(403, "NOT_A_PLAYER", "Hanya pemain game yang dapat meminta rematch.");
+  if (game.mode !== "pvp") fail(409, "REMATCH_NOT_AVAILABLE", "Rematch hanya tersedia untuk game PvP.");
+  if (game.status !== "completed") fail(409, "GAME_NOT_COMPLETED", "Rematch hanya dapat diminta setelah game selesai.");
+  const [self, opponent] = color === "w" ? [game.whitePlayer, game.blackPlayer] : [game.blackPlayer, game.whitePlayer];
+  return { gameId: game.id, color, userId: self.id, username: self.username, opponentId: opponent.id, opponentName: opponent.username };
+}
+
+/**
+ * Both players accepted: opens the rematch as a new, running game with the colours swapped, the same clock
+ * and the same ranked/casual status. Shares the matchmaking lock so it cannot race with a queue pairing.
+ * Returns the new room id plus one `rematch_started` payload per player.
+ */
+async function startRematch(gameId, receivedAt = new Date()) {
+  return sequelize.transaction({ isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED }, async (transaction) => {
+    await sequelize.query("SELECT pg_advisory_xact_lock(hashtext(:lockKey))", {
+      replacements: { lockKey: MATCHMAKING_LOCK_KEY }, transaction,
+    });
+    const previous = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!previous || previous.mode !== "pvp" || previous.status !== "completed" || !previous.black_player_id) {
+      fail(409, "REMATCH_NOT_AVAILABLE", "Rematch hanya tersedia untuk game PvP yang sudah selesai.");
+    }
+    const playerIds = [previous.white_player_id, previous.black_player_id];
+    const busy = await Game.findOne({
+      where: {
+        mode: "pvp", status: { [Op.in]: ["waiting", "in_progress"] },
+        [Op.or]: [{ white_player_id: { [Op.in]: playerIds } }, { black_player_id: { [Op.in]: playerIds } }],
+      },
+      transaction,
+    });
+    if (busy) fail(409, "REMATCH_UNAVAILABLE", "Salah satu pemain sudah berada di game atau antrean lain.");
+
+    const users = await User.findAll({ where: { id: { [Op.in]: playerIds } }, attributes: ["id", "username", "elo_rating"], transaction });
+    const byId = (id) => users.find((row) => row.id === id);
+    const white = byId(previous.black_player_id); // colours swap
+    const black = byId(previous.white_player_id);
+    const ms = previous.time_control_minutes * 60_000;
+    const game = await Game.create({
+      id: randomUUID(), mode: "pvp", status: "in_progress",
+      time_control_minutes: previous.time_control_minutes, increment_seconds: previous.increment_seconds,
+      bot_difficulty: null, white_player_id: white.id, black_player_id: black.id,
+      current_fen: START_FEN, white_time_remaining_ms: ms, black_time_remaining_ms: ms,
+      turn_started_at: receivedAt, started_at: receivedAt,
+      is_ranked: previous.is_ranked,
+      white_elo_before: previous.is_ranked ? white.elo_rating : null,
+      black_elo_before: previous.is_ranked ? black.elo_rating : null,
+    }, { transaction });
+
+    const payloadFor = (color, self, opponent) => ({
+      userId: self.id,
+      payload: {
+        room_id: game.id, previous_room_id: gameId, color, opponent: opponent.username,
+        game: publicGame(game, color, opponent.username, receivedAt),
+      },
+    });
+    return { roomId: game.id, previousRoomId: gameId, players: [payloadFor("w", white, black), payloadFor("b", black, white)] };
   });
 }
 
@@ -627,6 +769,7 @@ async function watchGame(userId, gameId) {
   return {
     room_id: game.id, fen: game.current_fen, pgn: buildPgn(history, game.result || "*"),
     white: game.whitePlayer.username, black, mode: game.mode, bot_difficulty: game.bot_difficulty,
+    ranked: Boolean(game.is_ranked), elo: eloSummary(game),
     status: game.status, result: game.result, termination_reason: game.termination_reason,
     clocks: clockSnapshot(game),
     time_control: Object.keys(TIME_CONTROLS).find((id) => TIME_CONTROLS[id].minutes === game.time_control_minutes),
@@ -743,7 +886,8 @@ async function findActiveGameIds() {
 }
 
 module.exports = {
-  GameError, TIME_CONTROLS, createRoom, cancelMatchmaking, listLiveGames, listGameHistory,
+  GameError, TIME_CONTROLS, createRoom, joinMatchmaking, cancelMatchmaking, listLiveGames, listGameHistory,
+  getRematchContext, startRematch,
   makeMove, getGame, watchGame, resign, expireGame, findActiveGameIds,
   offerDraw, respondDraw, claimDraw, playBotMove, findPendingBotGames, failPendingBotTurn,
 };

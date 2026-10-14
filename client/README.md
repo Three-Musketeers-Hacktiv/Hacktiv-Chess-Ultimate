@@ -35,7 +35,8 @@ src/
 | Move sync | chess.js legal check → optimistic apply → `POST /api/games/:id/moves`; failure rolls the move back. Room broadcasts (`move`, `game_over`) are applied idempotently by ply count, with a PGN resync if a move was missed. |
 | Clocks | Server snapshots (`white_ms`, `black_ms`, `active_color`); the active clock is interpolated inside `ClockDisplay` only. |
 | Live board | Handlers are referentially stable and `ChessBoardPanel` is `memo`-ised, so only position/highlight changes re-render the board. |
-| Post-game | `game_over` opens a modal; the PGN movetext is POSTed to `/api/game/analyze` (not implemented by the server yet — the page shows a friendly message) and mapped to plies. |
+| Post-game | `game_over` opens a modal; "Review analysis" opens `/analysis`, which on mount sends the game's PGN to `POST /api/game/analyze { pgn }` (≤ 60 half-moves; the id-based `POST /api/games/:id/analysis` is only a fallback when no PGN exists) and maps `{ ply, move, evaluation:{cp,mate}, centipawn_loss, label, best_alternative }` onto the replay. Best Move chips are emerald, Blunders vermillion, and a Mistake/Blunder row has a collapsible "Stockfish suggests" box. If the engine is offline (`ENGINE_UNAVAILABLE`) or the game is too long, a plain replay with a notice is shown. |
+| Bot games | `POST /api/games { mode: 'bot', time_control, difficulty }` → `201`, straight to `/arena/:id`. Stockfish's replies arrive as `move` events. Unlocked only when `GET /` reports `bot: available`. No draw offers vs the bot (server: PvP only); "Tantang Lagi" starts a new bot game with the same settings. |
 
 ## Backend audit (what `server/` really implements)
 
@@ -52,10 +53,22 @@ src/
 
 **Flagged "Coming Soon"** (absent in `server/`, UI kept and guarded by `lib/capabilities.js`):
 
-- Rematch (`request_rematch` has no listener) — button shows the badge and a toast, nothing is emitted.
-- Stockfish analysis (`/api/game/analyze`, `planned` in `GET /`) — no request is made; the page offers a plain move-by-move replay.
-- Bot games (`mode: "bot"` rejected; `planned`), game history, daily puzzle, tournaments.
+- PvP rematch and ranked matchmaking when `GET /` does not report `capabilities.rematch` / `capabilities.ranked` as `available` (older server): the rematch button shows "Coming Soon" and nothing is emitted; the ranked button is disabled.
+- Stockfish analysis and bot games when `GET /` says `planned` (i.e. `STOCKFISH_PATH` is not configured on the server).
+- Daily puzzle, tournaments (`planned`).
+- Profile (`GET /api/profile/me`) and game history (`GET /api/games`) exist on the server but have no client screen yet; their lobby tiles stay "Coming Soon".
 
-The socket only listens to `watch_game` (no `offer_draw`, `request_rematch`, `leave_room`); draws are REST-only and already wired.
+Also wired: `POST /api/auth/logout` (token revocation) on user sign-out.
+
+The socket listens to `watch_game`, `request_rematch` and `decline_rematch` (no `offer_draw`, `leave_room`); draws are REST-only and already wired.
+
+**Ranked + rematch (server + client)**
+
+| Piece | Where |
+| --- | --- |
+| Elo (K = 32, ±200 queue window), `users.elo_rating` default 1500 | `server/src/utils/elo.js`, `game.service.js` (`finishGame` books both ratings in the game-ending transaction), migration `202610150001-…` |
+| `POST /api/matchmaking/join { mode: 'ranked' \| 'casual', time_control }` | `matchmakingApi.join` → `useMatchmaking.start(timeControl, mode)`; the "Competitive Ranked Match" card in `LobbyPage`; the player's Elo is shown from `GET /` (`home.user.elo_rating`) and refreshed whenever the lobby opens |
+| `game_over` / game objects carry `ranked` and `elo: { white\|black: { before, change, after } }` | `useLiveGame` → `outcome.elo`; `GameOverModal` + `EloChange` render `+16 ELO` (emerald) / `-14 ELO` (crimson) with a count-up and pulse; `PlayerCard` shows the live rating |
+| Socket rematch: `request_rematch` → `rematch_requested` (ack) / `rematch_pending` (opponent) → `rematch_started` | `useRematch` (all listeners cleaned up on unmount; leaving the arena withdraws an open challenge), `RematchChallengeModal` ("Opponent challenges you to a Rematch! Accept?"). `rematch_started` carries the new `room_id`; `ArenaPage` is keyed by room, so board, clocks, orientation (colours swap) and move log restart from the new `game_state`. |
 
 Server-side limits: there is no "my current queue" lookup. A queue entry created from another browser/device with a different time control answers `409 MATCHMAKING_ALREADY_QUEUED` and cannot be cancelled from here — the server message is shown instead.

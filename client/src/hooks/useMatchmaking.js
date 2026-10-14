@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { gamesApi } from '../lib/api'
+import { gamesApi, matchmakingApi } from '../lib/api'
 import { EVENTS } from '../lib/config'
 import { queue, unsupportedTimes } from '../lib/storage'
 
@@ -9,7 +9,10 @@ const STATUS_POLL_MS = 3000
 /**
  * Instant matchmaking on top of the server-side queue.
  *
- * start(timeControl) → `POST /api/games { mode: 'pvp', time_control }`
+ * start(timeControl, mode = 'casual')
+ *   casual → `POST /api/games { mode: 'pvp', time_control }`
+ *   ranked → `POST /api/matchmaking/join { mode: 'ranked', time_control }` (rated game, rivals within ±200 Elo)
+ *   Both answer the same way:
  *   • 200 `matched`   → an opponent was waiting (or we already had a running game): go to `/arena/:id`.
  *   • 202 `searching` → we are queued. The server announces the pairing with a private `game_started`
  *                       socket event; a light `GET /api/games/:id` poll covers a missed event/reconnect.
@@ -26,6 +29,7 @@ export function useMatchmaking({ socket }) {
   const [phase, setPhase] = useState('idle') // idle | searching
   const [stage, setStage] = useState('lookup') // lookup (request in flight) | waiting (queued)
   const [searchingFor, setSearchingFor] = useState(null)
+  const [searchingMode, setSearchingMode] = useState('casual') // casual | ranked
   const [roomId, setRoomId] = useState(null)
   const [error, setError] = useState('')
   const [unsupported, setUnsupported] = useState(unsupportedTimes.get)
@@ -45,6 +49,7 @@ export function useMatchmaking({ socket }) {
     setPhase('idle')
     setStage('lookup')
     setSearchingFor(null)
+    setSearchingMode('casual')
   }, [trackRoom])
 
   const goArena = useCallback(
@@ -79,7 +84,7 @@ export function useMatchmaking({ socket }) {
   }, [showIdle, dropQueue])
 
   const start = useCallback(
-    async (timeControl) => {
+    async (timeControl, mode = 'casual') => {
       const run = ++runRef.current
       const alive = () => runRef.current === run
 
@@ -87,10 +92,14 @@ export function useMatchmaking({ socket }) {
       setPhase('searching')
       setStage('lookup')
       setSearchingFor(timeControl)
+      setSearchingMode(mode)
       setError('')
 
       try {
-        const res = await gamesApi.create(timeControl)
+        const res =
+          mode === 'ranked'
+            ? await matchmakingApi.join({ mode, timeControl })
+            : await gamesApi.create(timeControl)
         const game = res?.game
         const granted = game?.time_control?.id
         if (granted && granted !== timeControl) setUnsupported(unsupportedTimes.add(timeControl))
@@ -101,7 +110,7 @@ export function useMatchmaking({ socket }) {
           return
         }
 
-        queue.set({ id: game.id, time_control: timeControl })
+        queue.set({ id: game.id, time_control: timeControl, mode })
         if (!alive()) {
           dropQueue(game.id) // cancelled while the request was in flight
           return
@@ -131,6 +140,7 @@ export function useMatchmaking({ socket }) {
         const status = res?.game?.status
         if (status === 'waiting') {
           setSearchingFor(saved.time_control ?? null)
+          setSearchingMode(saved.mode === 'ranked' ? 'ranked' : 'casual')
           setPhase('searching')
           setStage('waiting')
           trackRoom(saved.id)
@@ -189,5 +199,5 @@ export function useMatchmaking({ socket }) {
     }
   }, [dropQueue])
 
-  return { phase, stage, searchingFor, error, unsupported, start, cancel }
+  return { phase, stage, searchingFor, searchingMode, error, unsupported, start, cancel }
 }

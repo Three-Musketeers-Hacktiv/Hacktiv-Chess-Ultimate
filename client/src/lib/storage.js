@@ -31,7 +31,24 @@ export const session = {
     write(localStorage, STORAGE_KEYS.user, null)
     write(sessionStorage, STORAGE_KEYS.lastGame, null)
     write(localStorage, STORAGE_KEYS.queue, null)
+    write(localStorage, STORAGE_KEYS.capabilities, null)
   },
+}
+
+/** Last feature flags `GET /` reported — keeps menus unlocked across reloads until the server answers again. */
+export const capabilityCache = {
+  get: () => read(localStorage, STORAGE_KEYS.capabilities),
+  set: (value) => write(localStorage, STORAGE_KEYS.capabilities, value),
+}
+
+/**
+ * The visual theme: `{ boardId, piecesType, backgroundId }` under `hcu.globalTheme`. Device-level on purpose
+ * (it survives sign-out). `legacyBoardId` is the board-only value stored before backgrounds/pieces existed.
+ */
+export const themeStore = {
+  get: () => read(localStorage, STORAGE_KEYS.globalTheme),
+  set: (selection) => write(localStorage, STORAGE_KEYS.globalTheme, selection),
+  legacyBoardId: () => read(localStorage, STORAGE_KEYS.legacyBoardTheme),
 }
 
 // Migration: the pre-v2 key was filled while the server still ignored presets — drop it for good.

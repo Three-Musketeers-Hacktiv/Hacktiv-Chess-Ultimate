@@ -18,9 +18,12 @@
   --shadow-glow-emerald: 0 0 22px rgba(16, 185, 129, 0.22);
   --shadow-glow-crimson: 0 0 22px rgba(239, 68, 68, 0.2);
 
-  --animate-rise: rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
-  --animate-fade: fade 0.4s ease-out both;
-  --animate-pop: pop 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+  /* `backwards`, never `both`/`forwards`: a kept `transform` makes the element the containing block of every
+     `position: fixed` descendant — react-chessboard's drag preview then lands off the board. */
+  --animate-rise: rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  --animate-fade: fade 0.4s ease-out backwards;
+  --animate-fade-in: badge-in 0.24s ease-out backwards;
+  --animate-pop: pop 0.28s cubic-bezier(0.16, 1, 0.3, 1) backwards;
   --animate-sheen: sheen 2.4s ease-in-out infinite;
   --animate-pulse-ring: pulse-ring 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
 
@@ -31,6 +34,10 @@
   @keyframes fade {
     from { opacity: 0; }
     to { opacity: 1; }
+  }
+  @keyframes badge-in {
+    from { opacity: 0; transform: scale(0.5); }
+    to { opacity: 1; transform: scale(1); }
   }
   @keyframes pop {
     from { opacity: 0; transform: scale(0.96); }
@@ -81,6 +88,22 @@
     scrollbar-width: thin;
     scrollbar-color: rgb(51 65 85 / 0.7) transparent;
   }
+}
+
+/* Obsidian scrollbars for panels that opt in (`scrollbar-thin` + thumb/track). */
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  &::-webkit-scrollbar { width: 8px; height: 8px; }
+}
+@utility scrollbar-thumb-slate-800 {
+  scrollbar-color: var(--color-slate-800) transparent;
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--color-slate-800);
+    border-radius: 999px;
+  }
+}
+@utility scrollbar-track-transparent {
+  &::-webkit-scrollbar-track { background: transparent; }
 }
 
 @media (prefers-reduced-motion: reduce) {

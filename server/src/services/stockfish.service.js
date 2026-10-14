@@ -29,6 +29,22 @@ function isAvailable() {
   }
 }
 
+/** Why the engine is (not) usable — for logs and diagnostics: `{ available, path, reason }`. */
+function availabilityReport() {
+  const configured = process.env.STOCKFISH_PATH?.trim();
+  if (!configured) {
+    return { available: false, path: null, reason: "STOCKFISH_PATH belum diatur di server/.env." };
+  }
+  const executable = path.resolve(configured);
+  if (!isAvailable()) {
+    return {
+      available: false, path: executable,
+      reason: `File Stockfish tidak ditemukan atau tidak dapat diakses: ${executable}`,
+    };
+  }
+  return { available: true, path: executable, reason: null };
+}
+
 function parseBestMove(line) {
   const match = /^bestmove ([a-h][1-8][a-h][1-8][qrbn]?)(?:\s|$)/.exec(String(line).trim());
   return match?.[1] ?? null;
@@ -238,4 +254,4 @@ function reserveAnalysis() {
   };
 }
 
-module.exports = { isAvailable, parseBestMove, parseUciScore, reserveBotMove, reserveAnalysis, SKILL_LEVELS };
+module.exports = { isAvailable, availabilityReport, parseBestMove, parseUciScore, reserveBotMove, reserveAnalysis, SKILL_LEVELS };

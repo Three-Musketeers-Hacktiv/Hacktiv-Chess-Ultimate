@@ -17,6 +17,7 @@ export function Field({ label, error, hint, className, ...inputProps }) {
         className={cn(
           'h-11 w-full rounded-xl border bg-slate-950/50 px-3.5 text-sm text-slate-100 placeholder:text-slate-600',
           'transition-all duration-300 ease-out focus:outline-none focus:ring-4',
+          'disabled:cursor-not-allowed disabled:border-slate-800/50 disabled:bg-slate-950/30 disabled:text-slate-500 disabled:hover:border-slate-800/50',
           error
             ? 'border-red-500/50 focus:border-red-400 focus:ring-red-500/10'
             : 'border-slate-800/80 hover:border-slate-700 focus:border-violet-400/70 focus:ring-violet-500/10',

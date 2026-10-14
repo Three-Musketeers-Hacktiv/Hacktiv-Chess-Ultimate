@@ -38,6 +38,7 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         validate: { notEmpty: true, len: [1, 255] },
       },
+      elo_rating: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1500 },
     },
     {
       sequelize,

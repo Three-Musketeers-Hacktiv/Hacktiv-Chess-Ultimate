@@ -215,6 +215,30 @@ Response `200`:
 
 Tanpa token, token tidak valid/kedaluwarsa, atau token yang sudah dicabut menghasilkan `401`. Klien harus menghapus token lokal setelah logout berhasil.
 
+### Ubah username
+
+`PUT /api/user/update-username` (**Auth**)
+
+Mengganti username akun yang sedang login. Email tidak dapat diubah. Body wajib berisi username baru dan password saat ini sebagai konfirmasi (bukan password baru).
+
+Body:
+
+```json
+{ "username": "player2", "password": "passwordrahasia123" }
+```
+
+Response `200`:
+
+```json
+{
+  "status": "success",
+  "message": "Username berhasil diperbarui",
+  "user": { "username": "player2" }
+}
+```
+
+Username mengikuti aturan yang sama dengan registrasi (3–24 karakter, huruf ASCII, angka, `_`, atau `-`, disimpan lowercase). Password yang salah menghasilkan `401` dengan pesan `Password salah. Konfirmasi gagal.` Username yang sudah dipakai menghasilkan `409`. Input tidak valid menghasilkan `400`. JWT tidak diterbitkan ulang.
+
 Endpoint game, profil, dan analisis yang memerlukan akun menolak request tanpa JWT. Detail game dan riwayat pribadi hanya dapat dibaca pemain terkait; pengecualian baca-saja untuk penonton hanya berlaku melalui `GET /api/games/live` dan Socket.IO `watch_game` pada game PvP yang sedang berlangsung. Hanya pemain yang dapat mengirim langkah atas nama akunnya sendiri.
 
 ### Buat game
@@ -299,6 +323,24 @@ Response `200`:
 ```json
 { "status": "success", "cancelled": true, "gameId": "<uuid>" }
 ```
+
+### Matchmaking ranked (Elo)
+
+`POST /api/matchmaking/join` (**Auth**)
+
+```json
+{ "mode": "ranked", "time_control": "10+0" }
+```
+
+`mode` adalah `ranked` atau `casual` (antrean PvP biasa tanpa rating, setara `POST /api/games` mode `pvp`). Antrean ranked hanya mempertemukan pemain ranked dengan kontrol waktu yang sama dan selisih Elo maksimal **±200**; antrean ranked dan casual tidak pernah saling mencocokkan. Status response sama dengan `POST /api/games` (`200` matched, `202` searching) dan antrean dibatalkan dengan `DELETE /api/games/:id/matchmaking`. Mengantre di mode/kontrol waktu lain saat antrean aktif menghasilkan `409 MATCHMAKING_ALREADY_QUEUED`. `mode` tidak valid menghasilkan `400 INVALID_MATCHMAKING_MODE`.
+
+Game ranked membawa `ranked: true` dan `elo` pada setiap objek game (REST, `game_started`, `game_state`, `game_over`):
+
+```json
+{ "ranked": true, "elo": { "white": { "before": 1500, "change": -16, "after": 1484 }, "black": { "before": 1500, "change": 16, "after": 1516 } } }
+```
+
+`change` dan `after` bernilai `null` sampai game selesai. Saat game selesai (checkmate, resign, timeout, remis, dll.) server menghitung Elo resmi dengan K = 32 — `E = 1 / (1 + 10^((Rb − Ra) / 400))`, `R' = R + 32 × (S − E)` — dan memperbarui `users.elo_rating` kedua pemain dalam transaksi yang sama dengan hasil game. Perubahan kedua pemain selalu berlawanan tanda (zero-sum). Game bot dan casual tidak mengubah rating (`elo: null`). Rating saat ini ada di `GET /` (`home.user.elo_rating`) dan `GET /api/profile/me` (`profile.elo_rating`).
 
 ### Daftar game PvP yang sedang berlangsung
 
@@ -439,6 +481,16 @@ Mengembalikan profil pengguna yang sedang login, statistik seluruh game selesai 
 
 Endpoint hanya mengambil data pengguna dari JWT dan tidak menerima `user_id`. Statistik mencakup semua game selesai; daftar game dibatasi 50 item terbaru. Tidak ada rating Elo atau statistik pembukaan pada MVP.
 
+### Analisis PGN
+
+`POST /api/game/analyze` (**Auth**)
+
+```json
+{ "pgn": "1. e4 e5 2. Nf3 Nc6" }
+```
+
+`pgn` boleh PGN lengkap (dengan header) atau movetext saja. Server mem-parse dan me-replay PGN dengan chess.js lebih dulu (hanya langkah legal yang sampai ke engine), lalu menjalankan Stockfish yang sama dan antrean yang sama dengan analisis game tersimpan (maksimal 60 half-move, 8.000 karakter). Response `200` memiliki bentuk yang sama dengan analisis game: `{ status, result, analyzed_plies, analysis: [{ ply, color, move, evaluation: { cp, mate }, centipawn_loss, label, best_alternative }] }`. `label` adalah `Best Move`, `Mistake` (loss ≥ 100 cp) atau `Blunder` (loss ≥ 300 cp, atau skor mate yang terlewat); `best_alternative` (SAN) terisi bila engine menyarankan langkah lain. Error: `400 INVALID_PGN`, `413 PGN_TOO_LARGE`, `422 ANALYSIS_GAME_TOO_LONG`, `503 ENGINE_UNAVAILABLE | ENGINE_BUSY | ENGINE_ANALYSIS_FAILED`. `GET /` melaporkan `capabilities.analysis` dan fitur `analysis` sebagai `available` bila `STOCKFISH_PATH` valid.
+
 ### Analisis pascapertandingan
 
 `POST /api/games/:id/analysis` (**Auth**)
@@ -578,8 +630,27 @@ Contoh event tawaran remis dan responsnya:
 { "event": "draw_response", "data": { "room_id": "<uuid>", "decision": "decline" } }
 ```
 
+### Rematch PvP
+
+Hanya untuk game PvP yang sudah `completed` dan hanya untuk kedua pemainnya. Event dikirim ke room privat `user:<id>` (pemain tidak perlu lagi subscribe ke game lama). Kegagalan dikirim sebagai `rematch_error` (bukan `game_error`).
+
+| Client → server | Payload | Keterangan |
+| --- | --- | --- |
+| `request_rematch` | `{ "room_id": "<uuid game lama>" }` | Permintaan pertama menyimpan tantangan; permintaan dari lawan memulai game baru. |
+| `decline_rematch` | `{ "room_id": "<uuid game lama>" }` | Menolak tantangan lawan yang tertunda, atau menarik tantangan sendiri (mis. keluar dari arena). Lawan menerima `rematch_declined`. |
+
+| Server → client | Penerima | Payload |
+| --- | --- | --- |
+| `rematch_requested` | peminta | `{ "room_id" }` — tantangan tersimpan, menunggu lawan. |
+| `rematch_pending` | lawan | `{ "room_id", "requested_by" }` — "Lawan menantang Anda rematch". |
+| `rematch_started` | kedua pemain | `{ "room_id" (baru), "previous_room_id", "color", "opponent", "game" }` — warna ditukar, papan dan jam direset, status ranked/casual dipertahankan. |
+| `rematch_declined` | peminta | `{ "room_id", "declined_by" }` |
+| `rematch_error` | pengirim | `{ "code", "message", "room_id" }` — `NOT_A_PLAYER`, `GAME_NOT_COMPLETED`, `REMATCH_NOT_AVAILABLE`, `REMATCH_ALREADY_STARTED`, `REMATCH_UNAVAILABLE` (salah satu pemain sudah di game/antrean lain), `INVALID_ROOM_ID`. |
+
+Status handshake disimpan di memori per room (kedaluwarsa 5 menit) dan diserialkan per room, sehingga dua `request_rematch` serentak hanya menghasilkan satu game baru.
+
 ## MVP yang belum dicakup
 
 - Puzzle harian belum memiliki endpoint karena koleksi puzzle valid belum ditentukan.
-- Rating Elo, pembukaan favorit, dan matchmaking berbasis rating belum termasuk kontrak MVP.
+- Pembukaan favorit belum termasuk kontrak MVP.
 - Game aktif serta clock disimpan di PostgreSQL dan dipulihkan setelah server restart; klien harus subscribe ulang dengan `watch_game` untuk menerima snapshot terbaru.

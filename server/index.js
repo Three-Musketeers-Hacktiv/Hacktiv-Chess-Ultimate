@@ -54,6 +54,8 @@ async function startServer() {
           result: result.game.result,
           pgn: result.pgn,
           clocks: result.game.clocks,
+          ranked: Boolean(result.game.ranked),
+          elo: result.game.elo || null,
         });
       }
     } catch (error) {
@@ -70,6 +72,9 @@ async function startServer() {
 
   httpServer.listen(port, () => {
     console.log(`Hacktiv Chess API listening on port ${port}`);
+    const engine = stockfish.availabilityReport();
+    if (engine.available) console.log(`[stockfish] engine ready: ${engine.path}`);
+    else console.warn(`[stockfish] engine UNAVAILABLE — bot games and analysis will answer 503. ${engine.reason}`);
   });
 }
 

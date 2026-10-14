@@ -18,7 +18,7 @@ function buildGamePgn(game, moves) {
 
 async function getProfile(userId) {
   const [user, [stats], games] = await Promise.all([
-    User.findByPk(userId, { attributes: ["id", "username"] }),
+    User.findByPk(userId, { attributes: ["id", "username", "elo_rating"] }),
     sequelize.query(
       `SELECT
         COUNT(*) FILTER (WHERE (white_player_id = :userId AND result = '1-0') OR
@@ -68,6 +68,7 @@ async function getProfile(userId) {
   return {
     id: user.id,
     username: user.username,
+    elo_rating: user.elo_rating,
     stats,
     games: games.map((game) => {
       const isWhite = game.white_player_id === userId;
