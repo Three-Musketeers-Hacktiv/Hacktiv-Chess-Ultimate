@@ -1,0 +1,34 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "Backend untuk MVP game catur online. API dirancang menggunakan Node.js dan Express, dengan PostgreSQL/Sequelize untuk penyimpanan, Socket.IO untuk pembaruan PvP real-time, `chess.js` v1.4.0 untuk aturan dan validasi langkah, serta Stockfish untuk langkah bot dan analisis permainan.",
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "node scripts/install-stockfish.js",
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "db:create": "sequelize-cli db:create --env development",
+    "db:create:testing": "sequelize-cli db:create --env test",
+    "db:create:production": "sequelize-cli db:create --env production",
+    "db:migrate": "sequelize-cli db:migrate --env development",
+    "db:migrate:testing": "sequelize-cli db:migrate --env test",
+    "db:migrate:production": "sequelize-cli db:migrate --env production",
+    "test": "node tests/auth.test.js && node tests/logout.test.js && node tests/stockfish.test.js && node tests/bot-recovery.test.js && node tests/bot.test.js && node tests/history.test.js && node tests/analysis.test.js && node tests/profile.test.js && node tests/analysis-pgn.test.js && node tests/elo.test.js && node tests/ranked-rematch.test.js && node tests/update-username.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "chess.js": "^1.4.0",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.7",
+    "express": "^5.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.23.1",
+    "sequelize": "^6.37.8",
+    "socket.io": "^4.8.4",
+    "sequelize-cli": "^6.6.5"
+  }
+}

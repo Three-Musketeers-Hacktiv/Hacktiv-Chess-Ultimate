@@ -1,0 +1,893 @@
+const { randomUUID } = require("node:crypto");
+const { Chess } = require("chess.js");
+const { Op, Transaction, UniqueConstraintError } = require("sequelize");
+const { Game, GameMove, User, sequelize } = require("../models");
+const { enqueueGameAction } = require("./game-queue.service");
+const stockfish = require("./stockfish.service");
+const { MATCHMAKING_RANGE, calculateEloChanges } = require("../utils/elo");
+
+const START_FEN = new Chess().fen();
+const MATCHMAKING_LOCK_KEY = "pvp:matchmaking";
+const TIME_CONTROLS = Object.freeze({
+  bullet: { minutes: 1, increment: 0 },
+  blitz: { minutes: 3, increment: 2 },
+  rapid: { minutes: 15, increment: 10 },
+  professional: { minutes: 60, increment: 30 },
+});
+
+class GameError extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+const fail = (status, code, message) => { throw new GameError(status, code, message); };
+const remainingField = (color) => color === "w" ? "white_time_remaining_ms" : "black_time_remaining_ms";
+const opponentColor = (color) => color === "w" ? "b" : "w";
+
+function clockSnapshot(game, asOf = new Date()) {
+  const fen = game.current_fen;
+  const activeColor = game.status === "in_progress" ? fen.split(" ")[1] : null;
+  const white = Number(game.white_time_remaining_ms);
+  const black = Number(game.black_time_remaining_ms);
+  const elapsed = game.turn_started_at && activeColor
+    ? Math.max(0, asOf.getTime() - new Date(game.turn_started_at).getTime()) : 0;
+  return {
+    white_ms: Math.max(0, white - (activeColor === "w" ? elapsed : 0)),
+    black_ms: Math.max(0, black - (activeColor === "b" ? elapsed : 0)),
+    active_color: activeColor,
+    as_of: asOf.toISOString(),
+  };
+}
+
+async function loadHistory(gameId, transaction) {
+  return GameMove.findAll({ where: { game_id: gameId }, order: [["ply", "ASC"]], transaction });
+}
+
+async function playerNames(game, transaction) {
+  const [white, black] = await Promise.all([
+    User.findByPk(game.white_player_id, { attributes: ["username"], transaction }),
+    game.black_player_id
+      ? User.findByPk(game.black_player_id, { attributes: ["username"], transaction })
+      : Promise.resolve(null),
+  ]);
+  return { white: white?.username || null, black: black?.username || null };
+}
+
+function buildPgn(history, result = "*") {
+  const chess = new Chess();
+  for (const item of history) chess.move({ from: item.from_square, to: item.to_square, promotion: item.promotion || undefined });
+  chess.header("Result", result);
+  return chess.pgn();
+}
+
+async function gamePgn(gameId, result, transaction) {
+  return buildPgn(await loadHistory(gameId, transaction), result);
+}
+
+function positionKey(fen) {
+  const parts = fen.split(" ");
+  const chess = new Chess(fen);
+  const hasLegalEnPassant = chess.moves({ verbose: true }).some((move) => move.flags.includes("e"));
+  return [...parts.slice(0, 3), hasLegalEnPassant ? parts[3] : "-"].join(" ");
+}
+
+function repetitionCount(history, currentFen) {
+  const positions = [START_FEN];
+  const chess = new Chess();
+  for (const item of history) {
+    chess.move({ from: item.from_square, to: item.to_square, promotion: item.promotion || undefined });
+    positions.push(chess.fen());
+  }
+  return positions.filter((fen) => positionKey(fen) === positionKey(currentFen)).length;
+}
+
+function isPlayer(game, userId) {
+  if (game.white_player_id === userId) return "w";
+  if (game.black_player_id === userId) return "b";
+  return null;
+}
+
+/**
+ * Ratings of a ranked game: `{ white|black: { before, after, change } }`. `after`/`change` stay `null`
+ * until the game is completed and the rating movement has been booked. `null` for casual/bot games and
+ * for a ranked room that is still waiting for its second player.
+ */
+function eloSummary(game) {
+  if (!game.is_ranked || game.white_elo_before == null || game.black_elo_before == null) return null;
+  const booked = game.white_elo_change != null && game.black_elo_change != null;
+  const side = (before, change) => ({
+    before, change: booked ? change : null, after: booked ? before + change : null,
+  });
+  return {
+    white: side(game.white_elo_before, game.white_elo_change),
+    black: side(game.black_elo_before, game.black_elo_change),
+  };
+}
+
+function publicGame(game, color = null, opponent = null, asOf = new Date()) {
+  const totalMs = game.time_control_minutes * 60_000;
+  const initialSeconds = totalMs / 1000;
+  return {
+    id: game.id,
+    mode: game.mode,
+    ranked: Boolean(game.is_ranked),
+    elo: eloSummary(game),
+    status: game.status,
+    color,
+    fen: game.current_fen,
+    result: game.result,
+    termination_reason: game.termination_reason,
+    bot_difficulty: game.bot_difficulty,
+    time_control: {
+      id: Object.keys(TIME_CONTROLS).find((id) => TIME_CONTROLS[id].minutes === game.time_control_minutes),
+      initial_seconds: initialSeconds,
+      increment_seconds: game.increment_seconds,
+    },
+    clocks: clockSnapshot(game, asOf),
+    opponent,
+  };
+}
+
+async function finishGame(game, { result, reason, endedAt }, transaction) {
+  if (game.turn_started_at) {
+    const activeColor = game.current_fen.split(" ")[1];
+    const field = remainingField(activeColor);
+    const elapsed = Math.max(0, endedAt.getTime() - new Date(game.turn_started_at).getTime());
+    game[field] = Math.max(0, Number(game[field]) - elapsed);
+  }
+  game.status = "completed";
+  game.result = result;
+  game.termination_reason = reason;
+  game.ended_at = endedAt;
+  game.turn_started_at = null;
+  game.draw_offer_by_player_id = null;
+  await applyElo(game, transaction);
+  await game.save({ transaction });
+}
+
+/**
+ * Books the Elo movement of a finished ranked PvP game (K = 32) onto both players and onto the game row.
+ * Runs inside the transaction that completes the game, so ratings and result can never disagree; the games
+ * of one user are serialised (one active PvP game per user), so each rating is read from the game snapshot
+ * and applied as an increment.
+ */
+async function applyElo(game, transaction) {
+  if (!game.is_ranked || game.mode !== "pvp" || !game.black_player_id) return;
+  const ratings = await User.findAll({
+    where: { id: { [Op.in]: [game.white_player_id, game.black_player_id] } },
+    attributes: ["id", "elo_rating"], transaction,
+  });
+  const current = (id) => ratings.find((row) => row.id === id)?.elo_rating;
+  const whiteBefore = game.white_elo_before ?? current(game.white_player_id);
+  const blackBefore = game.black_elo_before ?? current(game.black_player_id);
+  const changes = calculateEloChanges(whiteBefore, blackBefore, game.result);
+  game.white_elo_before = whiteBefore;
+  game.black_elo_before = blackBefore;
+  game.white_elo_change = changes.white.change;
+  game.black_elo_change = changes.black.change;
+  await Promise.all([
+    User.increment("elo_rating", { by: changes.white.change, where: { id: game.white_player_id }, transaction }),
+    User.increment("elo_rating", { by: changes.black.change, where: { id: game.black_player_id }, transaction }),
+  ]);
+}
+
+async function finishForPosition(game, chess, history, color, endedAt, transaction) {
+  let result = null;
+  let reason = null;
+  if (chess.isCheckmate()) {
+    result = color === "w" ? "1-0" : "0-1";
+    reason = "checkmate";
+  } else if (chess.isStalemate()) {
+    result = "1/2-1/2";
+    reason = "stalemate";
+  } else if (chess.isInsufficientMaterial()) {
+    result = "1/2-1/2";
+    reason = "dead_position";
+  } else if (repetitionCount(history, chess.fen()) + 1 >= 5) {
+    result = "1/2-1/2";
+    reason = "fivefold_repetition";
+  } else if (Number(chess.fen().split(" ")[4]) >= 150) {
+    result = "1/2-1/2";
+    reason = "seventy_five_move_rule";
+  }
+  if (!reason) return false;
+  await finishGame(game, { result, reason, endedAt }, transaction);
+  return true;
+}
+
+async function timeoutIfExpired(game, receivedAt, transaction) {
+  if (game.status !== "in_progress" || !game.turn_started_at) return false;
+  const chess = new Chess(game.current_fen);
+  const color = chess.turn();
+  const field = remainingField(color);
+  const elapsed = receivedAt.getTime() - new Date(game.turn_started_at).getTime();
+  const remaining = Number(game[field]);
+  if (elapsed < remaining) return false;
+  game[field] = 0;
+  const insufficient = chess.isInsufficientMaterial();
+  const result = insufficient ? "1/2-1/2" : color === "w" ? "0-1" : "1-0";
+  await finishGame(game, { result, reason: "timeout", endedAt: receivedAt }, transaction);
+  return true;
+}
+
+const queueMatches = (queued, preset, ranked) =>
+  queued.time_control_minutes === preset.minutes && queued.increment_seconds === preset.increment &&
+  Boolean(queued.is_ranked) === ranked;
+const failQueueConflict = () => fail(
+  409, "MATCHMAKING_ALREADY_QUEUED", "Batalkan antrean aktif sebelum memilih mode atau kontrol waktu lain.",
+);
+
+/**
+ * Creates a game: a bot game starts at once, a PvP game pairs with a waiting room or queues.
+ * `options.ranked` (only reachable through `joinMatchmaking`) makes the PvP game rated: the queue is then
+ * restricted to rooms of other ranked players within MATCHMAKING_RANGE Elo points.
+ */
+async function createRoom(userId, body, receivedAt = new Date(), { ranked = false } = {}) {
+  if (!body || !["pvp", "bot"].includes(body.mode)) fail(400, "INVALID_GAME", "mode harus pvp atau bot.");
+  if (body.mode === "pvp" && body.difficulty !== undefined) fail(400, "INVALID_GAME", "Game PvP tidak menerima difficulty.");
+  if (body.mode === "bot" && !["easy", "medium", "hard"].includes(body.difficulty)) {
+    fail(400, "INVALID_BOT_DIFFICULTY", "difficulty harus easy, medium, atau hard.");
+  }
+  const preset = TIME_CONTROLS[body.time_control];
+  if (!preset) fail(400, "INVALID_TIME_CONTROL", "Preset waktu tidak valid.");
+  if (body.mode === "bot" && !stockfish.isAvailable()) {
+    fail(503, "ENGINE_UNAVAILABLE", "Stockfish belum tersedia. Periksa konfigurasi STOCKFISH_PATH.");
+  }
+  const user = await User.findByPk(userId, { attributes: ["id", "username", "elo_rating"] });
+  if (!user) fail(401, "ACCOUNT_NOT_FOUND", "Akun tidak ditemukan.");
+  const ms = preset.minutes * 60_000;
+  const isRanked = ranked && body.mode === "pvp";
+  if (body.mode === "bot") {
+    const game = await Game.create({
+      id: randomUUID(), mode: "bot", status: "in_progress",
+      time_control_minutes: preset.minutes, increment_seconds: preset.increment,
+      bot_difficulty: body.difficulty, white_player_id: userId, black_player_id: null,
+      current_fen: START_FEN, white_time_remaining_ms: ms, black_time_remaining_ms: ms,
+      turn_started_at: receivedAt, started_at: receivedAt,
+    });
+    return {
+      game: publicGame(game, "w", `Stockfish (${body.difficulty})`, receivedAt),
+      matched: true, bot: true, white: user.username, black: `Stockfish (${body.difficulty})`,
+    };
+  }
+  try {
+    return await sequelize.transaction({ isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED }, async (transaction) => {
+      // Serialize PvP matchmaking across presets so a player cannot be matched twice concurrently.
+      await sequelize.query("SELECT pg_advisory_xact_lock(hashtext(:lockKey))", {
+        replacements: { lockKey: MATCHMAKING_LOCK_KEY }, transaction,
+      });
+
+      const activeGame = await Game.findOne({
+        where: {
+          mode: "pvp", status: "in_progress",
+          [Op.or]: [{ white_player_id: userId }, { black_player_id: userId }],
+        },
+        transaction,
+      });
+      if (activeGame) {
+        const color = isPlayer(activeGame, userId);
+        const names = await playerNames(activeGame, transaction);
+        return {
+          game: publicGame(activeGame, color, color === "w" ? names.black : names.white, receivedAt),
+          matched: true, alreadyMatched: true,
+          whitePlayerId: activeGame.white_player_id, blackPlayerId: activeGame.black_player_id,
+          white: names.white, black: names.black,
+        };
+      }
+
+      const ownQueue = await Game.findOne({
+        where: { mode: "pvp", status: "waiting", white_player_id: userId },
+        transaction, lock: transaction.LOCK.UPDATE,
+      });
+      if (ownQueue) {
+        if (!queueMatches(ownQueue, preset, isRanked)) failQueueConflict();
+        return { game: publicGame(ownQueue, "w", null, receivedAt), matched: false };
+      }
+
+      const opponentGame = await Game.findOne({
+        where: {
+          mode: "pvp", status: "waiting", black_player_id: null,
+          white_player_id: { [Op.ne]: userId },
+          time_control_minutes: preset.minutes, increment_seconds: preset.increment,
+          is_ranked: isRanked,
+          // Ranked: only a rival of similar strength (the room stores its owner's rating at queue time).
+          ...(isRanked && {
+            white_elo_before: { [Op.between]: [user.elo_rating - MATCHMAKING_RANGE, user.elo_rating + MATCHMAKING_RANGE] },
+          }),
+        },
+        order: [["created_at", "ASC"]], transaction, lock: transaction.LOCK.UPDATE,
+      });
+
+      if (opponentGame) {
+        const matchedAt = new Date();
+        opponentGame.black_player_id = userId;
+        if (isRanked) opponentGame.black_elo_before = user.elo_rating;
+        opponentGame.status = "in_progress";
+        opponentGame.started_at = matchedAt;
+        opponentGame.turn_started_at = matchedAt;
+        await opponentGame.save({ transaction });
+        const white = await User.findByPk(opponentGame.white_player_id, { attributes: ["username"], transaction });
+        return {
+          game: publicGame(opponentGame, "b", white.username, matchedAt), matched: true,
+          whitePlayerId: opponentGame.white_player_id, blackPlayerId: userId,
+          white: white.username, black: user.username,
+        };
+      }
+
+      const game = await Game.create({
+        id: randomUUID(), mode: "pvp", status: "waiting",
+        time_control_minutes: preset.minutes, increment_seconds: preset.increment,
+        bot_difficulty: null, white_player_id: userId, black_player_id: null,
+        current_fen: START_FEN, white_time_remaining_ms: ms, black_time_remaining_ms: ms,
+        turn_started_at: null, started_at: null,
+        is_ranked: isRanked, white_elo_before: isRanked ? user.elo_rating : null,
+      }, { transaction });
+      return { game: publicGame(game, "w", null, receivedAt), matched: false, white: user.username };
+    });
+  } catch (error) {
+    if (!(error instanceof UniqueConstraintError)) throw error;
+    const ownQueue = await Game.findOne({ where: { mode: "pvp", status: "waiting", white_player_id: userId } });
+    if (!ownQueue) throw error;
+    if (!queueMatches(ownQueue, preset, isRanked)) failQueueConflict();
+    return { game: publicGame(ownQueue, "w", null, receivedAt), matched: false };
+  }
+}
+
+/**
+ * `POST /api/matchmaking/join` — `mode: "ranked"` pairs by rating (±MATCHMAKING_RANGE Elo) and rates the
+ * game, `mode: "casual"` is the classic unrated random pairing.
+ */
+async function joinMatchmaking(userId, body, receivedAt = new Date()) {
+  if (!body || !["ranked", "casual"].includes(body.mode)) {
+    fail(400, "INVALID_MATCHMAKING_MODE", "mode harus ranked atau casual.");
+  }
+  return createRoom(userId, { mode: "pvp", time_control: body.time_control }, receivedAt, { ranked: body.mode === "ranked" });
+}
+
+async function cancelMatchmaking(userId, gameId) {
+  return sequelize.transaction(async (transaction) => {
+    await sequelize.query("SELECT pg_advisory_xact_lock(hashtext(:lockKey))", {
+      replacements: { lockKey: MATCHMAKING_LOCK_KEY }, transaction,
+    });
+    const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
+    if (game.white_player_id !== userId) fail(403, "MATCHMAKING_FORBIDDEN", "Hanya pemilik antrean yang dapat membatalkannya.");
+    if (game.mode !== "pvp" || game.status !== "waiting" || game.white_player_id !== userId) {
+      fail(409, "MATCH_ALREADY_FOUND", "Antrean tidak bisa dibatalkan karena pertandingan sudah dimulai.");
+    }
+    await game.destroy({ transaction });
+    return { cancelled: true, gameId };
+  });
+}
+
+/** Who may ask for a rematch of `gameId` and who must agree: players of a *finished PvP* game only. */
+async function getRematchContext(userId, gameId) {
+  const game = await Game.findByPk(gameId, {
+    include: [
+      { model: User, as: "whitePlayer", attributes: ["id", "username"] },
+      { model: User, as: "blackPlayer", attributes: ["id", "username"] },
+    ],
+  });
+  if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
+  const color = isPlayer(game, userId);
+  if (!color) fail(403, "NOT_A_PLAYER", "Hanya pemain game yang dapat meminta rematch.");
+  if (game.mode !== "pvp") fail(409, "REMATCH_NOT_AVAILABLE", "Rematch hanya tersedia untuk game PvP.");
+  if (game.status !== "completed") fail(409, "GAME_NOT_COMPLETED", "Rematch hanya dapat diminta setelah game selesai.");
+  const [self, opponent] = color === "w" ? [game.whitePlayer, game.blackPlayer] : [game.blackPlayer, game.whitePlayer];
+  return { gameId: game.id, color, userId: self.id, username: self.username, opponentId: opponent.id, opponentName: opponent.username };
+}
+
+/**
+ * Both players accepted: opens the rematch as a new, running game with the colours swapped, the same clock
+ * and the same ranked/casual status. Shares the matchmaking lock so it cannot race with a queue pairing.
+ * Returns the new room id plus one `rematch_started` payload per player.
+ */
+async function startRematch(gameId, receivedAt = new Date()) {
+  return sequelize.transaction({ isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED }, async (transaction) => {
+    await sequelize.query("SELECT pg_advisory_xact_lock(hashtext(:lockKey))", {
+      replacements: { lockKey: MATCHMAKING_LOCK_KEY }, transaction,
+    });
+    const previous = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!previous || previous.mode !== "pvp" || previous.status !== "completed" || !previous.black_player_id) {
+      fail(409, "REMATCH_NOT_AVAILABLE", "Rematch hanya tersedia untuk game PvP yang sudah selesai.");
+    }
+    const playerIds = [previous.white_player_id, previous.black_player_id];
+    const busy = await Game.findOne({
+      where: {
+        mode: "pvp", status: { [Op.in]: ["waiting", "in_progress"] },
+        [Op.or]: [{ white_player_id: { [Op.in]: playerIds } }, { black_player_id: { [Op.in]: playerIds } }],
+      },
+      transaction,
+    });
+    if (busy) fail(409, "REMATCH_UNAVAILABLE", "Salah satu pemain sudah berada di game atau antrean lain.");
+
+    const users = await User.findAll({ where: { id: { [Op.in]: playerIds } }, attributes: ["id", "username", "elo_rating"], transaction });
+    const byId = (id) => users.find((row) => row.id === id);
+    const white = byId(previous.black_player_id); // colours swap
+    const black = byId(previous.white_player_id);
+    const ms = previous.time_control_minutes * 60_000;
+    const game = await Game.create({
+      id: randomUUID(), mode: "pvp", status: "in_progress",
+      time_control_minutes: previous.time_control_minutes, increment_seconds: previous.increment_seconds,
+      bot_difficulty: null, white_player_id: white.id, black_player_id: black.id,
+      current_fen: START_FEN, white_time_remaining_ms: ms, black_time_remaining_ms: ms,
+      turn_started_at: receivedAt, started_at: receivedAt,
+      is_ranked: previous.is_ranked,
+      white_elo_before: previous.is_ranked ? white.elo_rating : null,
+      black_elo_before: previous.is_ranked ? black.elo_rating : null,
+    }, { transaction });
+
+    const payloadFor = (color, self, opponent) => ({
+      userId: self.id,
+      payload: {
+        room_id: game.id, previous_room_id: gameId, color, opponent: opponent.username,
+        game: publicGame(game, color, opponent.username, receivedAt),
+      },
+    });
+    return { roomId: game.id, previousRoomId: gameId, players: [payloadFor("w", white, black), payloadFor("b", black, white)] };
+  });
+}
+
+async function listLiveGames() {
+  const games = await Game.findAll({
+    where: { mode: "pvp", status: "in_progress" },
+    include: [
+      { model: User, as: "whitePlayer", attributes: ["username"] },
+      { model: User, as: "blackPlayer", attributes: ["username"] },
+      { model: GameMove, as: "moves", attributes: ["id"] },
+    ],
+    order: [["started_at", "DESC"]], limit: 100,
+  });
+  const now = new Date();
+  return games.map((game) => ({
+    id: game.id, white: game.whitePlayer.username, black: game.blackPlayer.username,
+    startedAt: game.started_at,
+    time_control: {
+      id: Object.keys(TIME_CONTROLS).find((id) => TIME_CONTROLS[id].minutes === game.time_control_minutes),
+      initial_seconds: game.time_control_minutes * 60,
+      increment_seconds: game.increment_seconds,
+    },
+    clocks: clockSnapshot(game, now), fen: game.current_fen, moveCount: game.moves.length,
+  }));
+}
+
+function parseHistoryLimit(value) {
+  if (value === undefined) return 20;
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
+    fail(400, "INVALID_HISTORY_LIMIT", "limit harus berupa bilangan bulat antara 1 dan 50.");
+  }
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit > 50) {
+    fail(400, "INVALID_HISTORY_LIMIT", "limit harus berupa bilangan bulat antara 1 dan 50.");
+  }
+  return limit;
+}
+
+function decodeHistoryCursor(value) {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    fail(400, "INVALID_HISTORY_CURSOR", "cursor riwayat tidak valid.");
+  }
+  try {
+    const cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    const createdAt = new Date(cursor.created_at);
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (typeof cursor.created_at !== "string" || Number.isNaN(createdAt.getTime()) ||
+        createdAt.toISOString() !== cursor.created_at || !uuidPattern.test(cursor.id)) {
+      fail(400, "INVALID_HISTORY_CURSOR", "cursor riwayat tidak valid.");
+    }
+    return { createdAt, id: cursor.id };
+  } catch (error) {
+    if (error instanceof GameError) throw error;
+    fail(400, "INVALID_HISTORY_CURSOR", "cursor riwayat tidak valid.");
+  }
+}
+
+async function listGameHistory(userId, query = {}) {
+  const limit = parseHistoryLimit(query.limit);
+  const cursor = decodeHistoryCursor(query.cursor);
+  const conditions = [{
+    [Op.or]: [{ white_player_id: userId }, { black_player_id: userId }],
+  }];
+  if (cursor) {
+    conditions.push({
+      [Op.or]: [
+        { created_at: { [Op.lt]: cursor.createdAt } },
+        { created_at: cursor.createdAt, id: { [Op.lt]: cursor.id } },
+      ],
+    });
+  }
+
+  const foundGames = await Game.findAll({
+    where: { [Op.and]: conditions },
+    attributes: [
+      "id", "mode", "status", "bot_difficulty", "white_player_id", "black_player_id",
+      "time_control_minutes", "increment_seconds", "result", "termination_reason",
+      "created_at", "started_at", "ended_at",
+    ],
+    include: [
+      { model: User, as: "whitePlayer", attributes: ["username"] },
+      { model: User, as: "blackPlayer", attributes: ["username"], required: false },
+    ],
+    order: [["created_at", "DESC"], ["id", "DESC"]],
+    limit: limit + 1,
+  });
+  const hasMore = foundGames.length > limit;
+  const games = foundGames.slice(0, limit);
+  const moveCounts = games.length
+    ? await GameMove.findAll({
+      attributes: ["game_id", [sequelize.fn("COUNT", sequelize.col("id")), "move_count"]],
+      where: { game_id: { [Op.in]: games.map((game) => game.id) } },
+      group: ["game_id"],
+      raw: true,
+    })
+    : [];
+  const countsByGameId = new Map(moveCounts.map((row) => [row.game_id, Number(row.move_count)]));
+  const items = games.map((game) => {
+    const isWhite = game.white_player_id === userId;
+    const opponent = game.mode === "bot"
+      ? `Stockfish (${game.bot_difficulty})`
+      : isWhite ? game.blackPlayer?.username || null : game.whitePlayer?.username || null;
+    const timeControl = Object.entries(TIME_CONTROLS)
+      .find(([, preset]) => preset.minutes === game.time_control_minutes)?.[0] || null;
+    return {
+      id: game.id,
+      mode: game.mode,
+      status: game.status,
+      color: isWhite ? "w" : "b",
+      opponent,
+      time_control: {
+        id: timeControl,
+        initial_seconds: game.time_control_minutes * 60,
+        increment_seconds: game.increment_seconds,
+      },
+      bot_difficulty: game.bot_difficulty,
+      result: game.result,
+      termination_reason: game.termination_reason,
+      move_count: countsByGameId.get(game.id) || 0,
+      created_at: game.created_at,
+      started_at: game.started_at,
+      ended_at: game.ended_at,
+    };
+  });
+  const lastGame = games.at(-1);
+  const nextCursor = hasMore && lastGame
+    ? Buffer.from(JSON.stringify({ created_at: lastGame.created_at.toISOString(), id: lastGame.id })).toString("base64url")
+    : null;
+
+  return { games: items, pagination: { limit, has_more: hasMore, next_cursor: nextCursor } };
+}
+
+async function makeMove(userId, gameId, moveInput, receivedAt = new Date()) {
+  if (!moveInput || typeof moveInput.from !== "string" || typeof moveInput.to !== "string" ||
+      (moveInput.promotion !== undefined && !["q", "r", "b", "n"].includes(moveInput.promotion))) {
+    fail(400, "INVALID_MOVE", "Langkah harus memiliki petak asal dan tujuan yang valid.");
+  }
+  let botReservation = null;
+  try {
+    const result = await enqueueGameAction(gameId, () => sequelize.transaction(async (transaction) => {
+      const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+      if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
+      if (game.status !== "in_progress") fail(409, "GAME_NOT_ACTIVE", "Game tidak sedang berlangsung.");
+      const color = isPlayer(game, userId);
+      if (!color) fail(403, "NOT_A_PLAYER", "Hanya pemain dalam game yang dapat mengirim langkah.");
+      const chess = new Chess(game.current_fen);
+      if (chess.turn() !== color) fail(409, "NOT_YOUR_TURN", "Belum giliran Anda.");
+      if (await timeoutIfExpired(game, receivedAt, transaction)) {
+        return {
+          game: publicGame(game, color, null, receivedAt), gameOver: true, timedOut: true,
+          history: await loadHistory(gameId, transaction), pgn: await gamePgn(gameId, game.result, transaction),
+          ...await playerNames(game, transaction),
+        };
+      }
+      const history = await loadHistory(gameId, transaction);
+      let played;
+      try { played = chess.move({ from: moveInput.from, to: moveInput.to, promotion: moveInput.promotion }); }
+      catch { fail(400, "ILLEGAL_MOVE", "Langkah catur tidak legal."); }
+      if (!played) fail(400, "ILLEGAL_MOVE", "Langkah catur tidak legal.");
+      const elapsed = Math.max(0, receivedAt.getTime() - new Date(game.turn_started_at).getTime());
+      const field = remainingField(color);
+      game[field] = Math.max(0, Number(game[field]) - elapsed) + game.increment_seconds * 1000;
+      game.current_fen = chess.fen();
+      game.turn_started_at = receivedAt;
+      game.draw_offer_by_player_id = null;
+      const gameOver = await finishForPosition(game, chess, history, color, receivedAt, transaction);
+      if (!gameOver && game.mode === "bot") {
+        try { botReservation = stockfish.reserveBotMove(); }
+        catch (error) { fail(error.status || 503, error.code || "ENGINE_BUSY", error.message); }
+      }
+      const moveRow = await GameMove.create({
+        id: randomUUID(), game_id: gameId, ply: history.length + 1, actor_type: "player", player_id: userId,
+        color, from_square: played.from, to_square: played.to, promotion: played.promotion || null,
+        san: played.san, fen_after: chess.fen(), created_at: receivedAt,
+      }, { transaction });
+      await game.save({ transaction });
+      history.push(moveRow);
+      const names = await playerNames(game, transaction);
+      return {
+        game: publicGame(game, color, game.mode === "bot" ? `Stockfish (${game.bot_difficulty})` : names.black, receivedAt),
+        ...names,
+        move: { from: played.from, to: played.to, promotion: played.promotion || null, san: played.san, color },
+        pgn: buildPgn(history, game.result || "*"), history, gameOver,
+        botMovePending: Boolean(botReservation), botReservation,
+      };
+    }));
+    botReservation = null;
+    return result;
+  } finally {
+    botReservation?.release();
+  }
+}
+
+async function finishBotEngineFailure(gameId, expectedFen) {
+  return enqueueGameAction(gameId, () => sequelize.transaction(async (transaction) => {
+    const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!game || game.mode !== "bot" || game.status !== "in_progress" || game.current_fen !== expectedFen ||
+        new Chess(game.current_fen).turn() !== "b") return null;
+    const now = new Date();
+    if (await timeoutIfExpired(game, now, transaction)) {
+      return {
+        game: publicGame(game, "w", `Stockfish (${game.bot_difficulty})`, now), gameOver: true, timedOut: true,
+        pgn: await gamePgn(gameId, game.result, transaction), ...await playerNames(game, transaction),
+      };
+    }
+    await finishGame(game, { result: "1/2-1/2", reason: "engine_failure", endedAt: now }, transaction);
+    return {
+      game: publicGame(game, "w", `Stockfish (${game.bot_difficulty})`, now), gameOver: true, engineFailure: true,
+      pgn: await gamePgn(gameId, game.result, transaction), ...await playerNames(game, transaction),
+    };
+  }));
+}
+
+async function playBotMove(gameId, reservation) {
+  let fen;
+  try {
+    const pending = await Game.findByPk(gameId, { attributes: ["mode", "status", "current_fen", "bot_difficulty"] });
+    if (!pending || pending.mode !== "bot" || pending.status !== "in_progress" || new Chess(pending.current_fen).turn() !== "b") {
+      return null;
+    }
+    fen = pending.current_fen;
+    let uci;
+    try {
+      uci = await reservation.run(fen, pending.bot_difficulty);
+    } catch (error) {
+      const failed = await finishBotEngineFailure(gameId, fen);
+      if (failed) return failed;
+      throw error;
+    }
+    const from = uci.slice(0, 2);
+    const to = uci.slice(2, 4);
+    const promotion = uci[4] || undefined;
+    const enginePosition = new Chess(fen);
+    let engineMove;
+    try { engineMove = enginePosition.move({ from, to, promotion }); }
+    catch { /* illegal engine output is handled as an engine failure below */ }
+    if (!engineMove) {
+      const failed = await finishBotEngineFailure(gameId, fen);
+      if (failed) return failed;
+      throw new Error("Stockfish returned an illegal move.");
+    }
+    return await enqueueGameAction(gameId, () => sequelize.transaction(async (transaction) => {
+      const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+      if (!game || game.mode !== "bot" || game.status !== "in_progress" || game.current_fen !== fen) return null;
+      const chess = new Chess(game.current_fen);
+      if (chess.turn() !== "b") return null;
+      const now = new Date();
+      if (await timeoutIfExpired(game, now, transaction)) {
+        return {
+          game: publicGame(game, "w", `Stockfish (${game.bot_difficulty})`, now), gameOver: true, timedOut: true,
+          pgn: await gamePgn(gameId, game.result, transaction), ...await playerNames(game, transaction),
+        };
+      }
+      let played;
+      try { played = chess.move({ from, to, promotion }); }
+      catch { throw new Error("Stockfish returned an illegal move."); }
+      if (!played) throw new Error("Stockfish returned an illegal move.");
+      const history = await loadHistory(gameId, transaction);
+      const elapsed = Math.max(0, now.getTime() - new Date(game.turn_started_at).getTime());
+      game.black_time_remaining_ms = Math.max(0, Number(game.black_time_remaining_ms) - elapsed) + game.increment_seconds * 1000;
+      game.current_fen = chess.fen();
+      game.turn_started_at = now;
+      const gameOver = await finishForPosition(game, chess, history, "b", now, transaction);
+      const moveRow = await GameMove.create({
+        id: randomUUID(), game_id: gameId, ply: history.length + 1, actor_type: "bot", player_id: null,
+        color: "b", from_square: played.from, to_square: played.to, promotion: played.promotion || null,
+        san: played.san, fen_after: chess.fen(), created_at: now,
+      }, { transaction });
+      await game.save({ transaction });
+      history.push(moveRow);
+      const names = await playerNames(game, transaction);
+      return {
+        game: publicGame(game, null, `Stockfish (${game.bot_difficulty})`, now),
+        ...names, move: { from: played.from, to: played.to, promotion: played.promotion || null, san: played.san, color: "b" },
+        pgn: buildPgn(history, game.result || "*"), history, gameOver,
+      };
+    }));
+  } finally {
+    // Also releases an unconsumed reservation when the database lookup fails.
+    reservation.release();
+  }
+}
+
+async function findPendingBotGames() {
+  const games = await Game.findAll({
+    where: { mode: "bot", status: "in_progress" },
+    attributes: ["id", "current_fen", "bot_difficulty"],
+  });
+  return games.filter((game) => new Chess(game.current_fen).turn() === "b");
+}
+
+async function failPendingBotTurn(gameId) {
+  const game = await Game.findByPk(gameId, { attributes: ["mode", "status", "current_fen"] });
+  if (!game || game.mode !== "bot" || game.status !== "in_progress") return null;
+  return finishBotEngineFailure(gameId, game.current_fen);
+}
+
+async function getGame(userId, gameId) {
+  const game = await Game.findByPk(gameId, {
+    include: [
+      { model: User, as: "whitePlayer", attributes: ["id", "username"] },
+      { model: User, as: "blackPlayer", attributes: ["id", "username"] },
+    ],
+  });
+  if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
+  if (!isPlayer(game, userId)) fail(403, "GAME_FORBIDDEN", "Hanya pemain game yang dapat melihat detail.");
+  const history = await loadHistory(gameId);
+  const black = game.mode === "bot" ? `Stockfish (${game.bot_difficulty})` : game.blackPlayer?.username || null;
+  return {
+    game: publicGame(game, isPlayer(game, userId), game.white_player_id === userId ? black : game.whitePlayer.username),
+    white: game.whitePlayer.username, black,
+    pgn: buildPgn(history, game.result || "*"),
+    history: history.map((item) => ({
+      ply: item.ply, color: item.color,
+      actor: item.actor_type === "bot" ? black : item.player_id === game.white_player_id ? game.whitePlayer.username : black,
+      from: item.from_square, to: item.to_square, promotion: item.promotion,
+      san: item.san, fen_after: item.fen_after,
+    })),
+  };
+}
+
+async function watchGame(userId, gameId) {
+  const game = await Game.findByPk(gameId, {
+    include: [
+      { model: User, as: "whitePlayer", attributes: ["username"] },
+      { model: User, as: "blackPlayer", attributes: ["username"] },
+    ],
+  });
+  if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
+  const color = isPlayer(game, userId);
+  const canWatchPvP = game.mode === "pvp" && game.status === "in_progress";
+  const canWatchOwnBot = game.mode === "bot" && game.status === "in_progress" && color;
+  if (!canWatchPvP && !canWatchOwnBot) {
+    fail(403, "WATCH_FORBIDDEN", "Anda tidak dapat menonton game ini.");
+  }
+  const history = await loadHistory(gameId);
+  const black = game.mode === "bot" ? `Stockfish (${game.bot_difficulty})` : game.blackPlayer?.username || null;
+  return {
+    room_id: game.id, fen: game.current_fen, pgn: buildPgn(history, game.result || "*"),
+    white: game.whitePlayer.username, black, mode: game.mode, bot_difficulty: game.bot_difficulty,
+    ranked: Boolean(game.is_ranked), elo: eloSummary(game),
+    status: game.status, result: game.result, termination_reason: game.termination_reason,
+    clocks: clockSnapshot(game),
+    time_control: Object.keys(TIME_CONTROLS).find((id) => TIME_CONTROLS[id].minutes === game.time_control_minutes),
+    draw_offer_by_player_id: game.draw_offer_by_player_id,
+  };
+}
+
+async function resign(userId, gameId, receivedAt = new Date()) {
+  return enqueueGameAction(gameId, () => sequelize.transaction(async (transaction) => {
+    const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
+    const color = isPlayer(game, userId);
+    if (!color) fail(403, "NOT_A_PLAYER", "Hanya pemain dalam game yang dapat menyerah.");
+    if (game.status !== "in_progress") fail(409, "GAME_NOT_ACTIVE", "Game tidak sedang berlangsung.");
+    if (await timeoutIfExpired(game, receivedAt, transaction)) return { game: publicGame(game, color, null, receivedAt), gameOver: true, timedOut: true, pgn: await gamePgn(gameId, game.result, transaction), ...await playerNames(game, transaction) };
+    await finishGame(game, { result: color === "w" ? "0-1" : "1-0", reason: "resignation", endedAt: receivedAt }, transaction);
+    return { game: publicGame(game, color, null, receivedAt), gameOver: true, pgn: await gamePgn(gameId, game.result, transaction), ...await playerNames(game, transaction) };
+  }));
+}
+
+async function offerDraw(userId, gameId, receivedAt = new Date()) {
+  return enqueueGameAction(gameId, () => sequelize.transaction(async (transaction) => {
+    const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
+    const color = isPlayer(game, userId);
+    if (!color) fail(403, "NOT_A_PLAYER", "Hanya pemain dalam game yang dapat menawarkan remis.");
+    if (game.mode !== "pvp" || game.status !== "in_progress") fail(409, "GAME_NOT_ACTIVE", "Game PvP tidak sedang berlangsung.");
+    if (await timeoutIfExpired(game, receivedAt, transaction)) return { game: publicGame(game, color, null, receivedAt), gameOver: true, timedOut: true, pgn: await gamePgn(gameId, game.result, transaction), ...await playerNames(game, transaction) };
+    if (new Chess(game.current_fen).turn() !== color) fail(409, "NOT_YOUR_TURN", "Tawaran remis hanya dapat dikirim saat giliran Anda.");
+    if (game.draw_offer_by_player_id) fail(409, "DRAW_OFFER_PENDING", "Sudah ada tawaran remis yang menunggu jawaban.");
+    const history = await loadHistory(gameId, transaction);
+    if (!history.some((move) => move.color === "w") || !history.some((move) => move.color === "b")) {
+      fail(409, "DRAW_OFFER_TOO_EARLY", "Kedua pemain harus sudah melangkah sebelum menawarkan remis.");
+    }
+    game.draw_offer_by_player_id = userId;
+    await game.save({ transaction });
+    const names = await playerNames(game, transaction);
+    return {
+      game: publicGame(game, color, null, receivedAt), offered_by: userId,
+      offered_by_username: names[color === "w" ? "white" : "black"], ...names,
+    };
+  }));
+}
+
+async function respondDraw(userId, gameId, decision, receivedAt = new Date()) {
+  if (!["accept", "decline"].includes(decision)) fail(400, "INVALID_DECISION", "decision harus accept atau decline.");
+  return enqueueGameAction(gameId, () => sequelize.transaction(async (transaction) => {
+    const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
+    const color = isPlayer(game, userId);
+    if (!color) fail(403, "NOT_A_PLAYER", "Hanya pemain dalam game yang dapat menjawab tawaran remis.");
+    if (game.status !== "in_progress" || game.mode !== "pvp") fail(409, "GAME_NOT_ACTIVE", "Game PvP tidak sedang berlangsung.");
+    if (await timeoutIfExpired(game, receivedAt, transaction)) return { game: publicGame(game, color, null, receivedAt), gameOver: true, timedOut: true, pgn: await gamePgn(gameId, game.result, transaction), ...await playerNames(game, transaction) };
+    if (!game.draw_offer_by_player_id || game.draw_offer_by_player_id === userId) fail(409, "NO_DRAW_OFFER", "Tidak ada tawaran remis dari lawan.");
+    if (decision === "accept") {
+      await finishGame(game, { result: "1/2-1/2", reason: "draw_agreement", endedAt: receivedAt }, transaction);
+    } else {
+      game.draw_offer_by_player_id = null;
+      await game.save({ transaction });
+    }
+    return { game: publicGame(game, color, null, receivedAt), gameOver: decision === "accept", decision, pgn: decision === "accept" ? await gamePgn(gameId, game.result, transaction) : undefined, ...await playerNames(game, transaction) };
+  }));
+}
+
+async function claimDraw(userId, gameId, reason, receivedAt = new Date()) {
+  if (!["threefold_repetition", "fifty_move_rule"].includes(reason)) fail(400, "INVALID_DRAW_CLAIM", "Alasan klaim remis tidak valid.");
+  return enqueueGameAction(gameId, () => sequelize.transaction(async (transaction) => {
+    const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!game) fail(404, "GAME_NOT_FOUND", "Game tidak ditemukan.");
+    const color = isPlayer(game, userId);
+    if (!color) fail(403, "NOT_A_PLAYER", "Hanya pemain dalam game yang dapat mengklaim remis.");
+    if (game.status !== "in_progress") fail(409, "GAME_NOT_ACTIVE", "Game tidak sedang berlangsung.");
+    if (await timeoutIfExpired(game, receivedAt, transaction)) return { game: publicGame(game, color, null, receivedAt), gameOver: true, timedOut: true, pgn: await gamePgn(gameId, game.result, transaction), ...await playerNames(game, transaction) };
+    const chess = new Chess(game.current_fen);
+    if (chess.turn() !== color) fail(409, "NOT_YOUR_TURN", "Klaim remis hanya dapat diajukan saat giliran Anda.");
+    const history = await loadHistory(gameId, transaction);
+    const valid = reason === "threefold_repetition"
+      ? repetitionCount(history, game.current_fen) >= 3
+      : Number(game.current_fen.split(" ")[4]) >= 100;
+    if (valid) {
+      await finishGame(game, { result: "1/2-1/2", reason, endedAt: receivedAt }, transaction);
+    } else {
+      const opponentField = remainingField(opponentColor(color));
+      game[opponentField] = Number(game[opponentField]) + 120_000;
+      await game.save({ transaction });
+    }
+    return { game: publicGame(game, color, null, receivedAt), gameOver: valid, claimAccepted: valid, pgn: valid ? await gamePgn(gameId, game.result, transaction) : undefined, ...await playerNames(game, transaction) };
+  }));
+}
+
+async function expireGame(gameId, now = new Date()) {
+  return enqueueGameAction(gameId, () => sequelize.transaction(async (transaction) => {
+    const game = await Game.findByPk(gameId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!game || game.status !== "in_progress") return null;
+    const chess = new Chess(game.current_fen);
+    const deadline = new Date(game.turn_started_at).getTime() + Number(game[remainingField(chess.turn())]);
+    if (now.getTime() < deadline) return null;
+    await timeoutIfExpired(game, new Date(deadline), transaction);
+    const pgn = await gamePgn(gameId, game.result, transaction);
+    const [white, black] = await Promise.all([
+      User.findByPk(game.white_player_id, { attributes: ["username"], transaction }),
+      User.findByPk(game.black_player_id, { attributes: ["username"], transaction }),
+    ]);
+    return {
+      game: publicGame(game, null, null, new Date(deadline)), gameOver: true,
+      white: white?.username, black: black?.username, pgn,
+    };
+  }));
+}
+
+async function findActiveGameIds() {
+  const games = await Game.findAll({ where: { status: "in_progress" }, attributes: ["id"] });
+  return games.map(({ id }) => id);
+}
+
+module.exports = {
+  GameError, TIME_CONTROLS, createRoom, joinMatchmaking, cancelMatchmaking, listLiveGames, listGameHistory,
+  getRematchContext, startRematch,
+  makeMove, getGame, watchGame, resign, expireGame, findActiveGameIds,
+  offerDraw, respondDraw, claimDraw, playBotMove, findPendingBotGames, failPendingBotTurn,
+};
